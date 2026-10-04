@@ -1,0 +1,25 @@
+{
+  "name": "@codewalk/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "walk": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --clean && tsc --emitDeclarationOnly",
+    "dev": "tsup src/index.ts --format esm --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@codewalk/core": "workspace:*",
+    "commander": "^15.0.0",
+    "ink": "^8.0.0",
+    "react": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0"
+  }
+}

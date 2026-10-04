@@ -1,0 +1,22 @@
+services:
+  postgres:
+    # Official Postgres 16 image with the pgvector extension pre-installed
+    image: pgvector/pgvector:pg16
+    container_name: codewalk-postgres
+    environment:
+      POSTGRES_USER: codewalk
+      POSTGRES_PASSWORD: codewalk
+      POSTGRES_DB: codewalk
+    ports:
+      - '5432:5432' # change to "5433:5432" if 5432 is taken
+    volumes:
+      - codewalk_pgdata:/var/lib/postgresql/data # data survives restarts
+    healthcheck:
+      # Docker marks the container "healthy" once Postgres accepts connections
+      test: ['CMD-SHELL', 'pg_isready -U codewalk -d codewalk']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  codewalk_pgdata:
