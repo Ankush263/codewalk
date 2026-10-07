@@ -1,8 +1,8 @@
 node_modules/
 dist/
 .env
-.walkthrough/
+**/.walkthrough/*
+!fixture/.walkthrough/config.json
 coverage/
 *.log
-pnpm-lock.yaml
 package-lock.json

@@ -1,0 +1,12 @@
+{
+  "roots": { "backend": "api", "frontend": "web" },
+  "apiClientWrappers": [
+    { "name": "api.get", "method": "GET", "urlArgIndex": 0 },
+    { "name": "api.post", "method": "POST", "urlArgIndex": 0 }
+  ],
+  "database": { "url": "postgres://codewalk:codewalk@localhost:5432/codewalk", "schema": "cw_fixture" },
+  "ignore": ["**/node_modules/**", "**/dist/**", "**/*.test.ts"],
+  "collapseHelpers": ["logger"],
+  "pinnedEdges": [],
+  "llm": { "provider": "anthropic", "model": "claude-sonnet-5", "maxContextTokens": 60000 }
+}
