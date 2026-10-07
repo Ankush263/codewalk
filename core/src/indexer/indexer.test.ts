@@ -1,0 +1,133 @@
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { loadConfig, type WalkConfig } from '../config.js';
+import { openStore, type Store } from '../store/index.js';
+import { indexRepo } from './index.js';
+
+const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://codewalk:codewalk@localhost:5432/codewalk';
+const FIXTURE = new URL('../../../fixture', import.meta.url).pathname;
+
+describe('indexRepo on the fixture', () => {
+  let repo: string;
+  let config: WalkConfig;
+  let store: Store;
+
+  beforeAll(async () => {
+    // A private copy, because the incremental tests edit and delete files.
+    repo = mkdtempSync(join(tmpdir(), 'cw-index-'));
+    cpSync(FIXTURE, repo, { recursive: true });
+    config = loadConfig(repo);
+    store = await openStore({ url: DATABASE_URL, schema: `cw_test_idx_${Math.random().toString(16).slice(2, 10)}` });
+    await store.migrate();
+  });
+
+  afterAll(async () => {
+    await store?.dropSchema();
+    await store?.close();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  const symbol = async (file: string, name: string) => {
+    const [s] = await store.findSymbol(file, name);
+    expect(s, `${file}#${name}`).toBeDefined();
+    return s;
+  };
+  const callees = async (file: string, name: string) =>
+    (await store.getCallees((await symbol(file, name)).id, 1)).map((c) => ({
+      text: c.calleeText,
+      target: c.callee ? `${c.callee.file}#${c.callee.name}` : c.resolved ? 'external' : 'unresolved',
+    }));
+
+  it('indexes every source file on the first run', async () => {
+    const result = await indexRepo(repo, config, store);
+    expect(result.scanned).toBe(23);
+    expect(result.changed).toHaveLength(23);
+    expect(result.removed).toEqual([]);
+    expect(result.stats.files).toBe(23);
+  });
+
+  it('extracts symbols with kinds, qualified names and export flags', async () => {
+    expect(await symbol('api/services/enrollService.ts', 'enrollPatient')).toMatchObject({
+      kind: 'function',
+      exported: true,
+      startLine: 35,
+      endLine: 69,
+      signature: 'export async function enrollPatient(input: EnrollInput, enrolledBy: string): Promise<Patient>',
+    });
+    expect((await symbol('web/components/EnrollForm.tsx', 'EnrollForm')).kind).toBe('component');
+    expect((await symbol('web/hooks/useEnrollMutation.ts', 'useEnrollMutation')).kind).toBe('hook');
+    expect(await symbol('web/components/EnrollForm.tsx', 'EnrollForm.handleSubmit')).toMatchObject({ kind: 'function', exported: false });
+    expect((await symbol('web/apiClient.ts', 'api.post')).kind).toBe('method');
+    expect((await symbol('api/errors.ts', 'ConflictError')).kind).toBe('class');
+    expect((await symbol('api/repositories/patientRepository.ts', 'Patient')).kind).toBe('type');
+    expect((await symbol('api/middleware/validate.ts', 'validate.validateBody')).kind).toBe('function');
+  });
+
+  it('resolves cross-file calls, constructors and package calls', async () => {
+    const calls = await callees('api/services/enrollService.ts', 'enrollPatient');
+    expect(calls).toContainEqual({ text: 'normalizePhone', target: 'api/services/enrollService.ts#normalizePhone' });
+    expect(calls).toContainEqual({ text: 'findPatientByPhone', target: 'api/repositories/patientRepository.ts#findPatientByPhone' });
+    expect(calls).toContainEqual({ text: 'ConflictError', target: 'api/errors.ts#ConflictError' });
+    expect(calls).toContainEqual({ text: 'pool.connect', target: 'external' });
+    expect(calls).toContainEqual({ text: 'redis.set', target: 'external' });
+  });
+
+  it('resolves functions returned from hooks and object-literal methods', async () => {
+    expect(await callees('web/components/EnrollForm.tsx', 'EnrollForm.handleSubmit')).toContainEqual({
+      text: 'mutate',
+      target: 'web/hooks/useEnrollMutation.ts#useEnrollMutation.mutate',
+    });
+    expect(await callees('web/hooks/useEnrollMutation.ts', 'useEnrollMutation.mutate')).toContainEqual({
+      text: 'api.post',
+      target: 'web/apiClient.ts#api.post',
+    });
+  });
+
+  it('marks dynamic dispatch, event emits and callbacks as unresolved', async () => {
+    expect(await callees('api/events/handlers.ts', 'dispatch')).toContainEqual({ text: 'handlers[name]', target: 'unresolved' });
+    expect(await callees('api/services/enrollService.ts', 'enrollPatient')).toContainEqual({ text: 'bus.emit', target: 'unresolved' });
+    expect(await callees('web/hooks/useEnrollMutation.ts', 'useEnrollMutation.mutate')).toContainEqual({ text: 'onSuccess', target: 'unresolved' });
+    // Untyped callback parameters inherit the origin of the call they're passed to (zod here).
+    expect(await callees('api/middleware/validate.ts', 'validate.validateBody')).toContainEqual({ text: 'i.path.join', target: 'external' });
+  });
+
+  it('finds callers across files', async () => {
+    const enroll = await symbol('api/services/enrollService.ts', 'enrollPatient');
+    const callers = await store.getCallers(enroll.id);
+    expect(callers.map((c) => `${c.caller.file}#${c.caller.name}:${c.callLine}`)).toEqual([
+      'api/controllers/patientsController.ts#enrollHandler:10',
+    ]);
+  });
+
+  it('does nothing when no file changed', async () => {
+    const result = await indexRepo(repo, config, store);
+    expect(result).toMatchObject({ changed: [], removed: [], refreshed: [] });
+  });
+
+  it('re-extracts a changed file and refreshes calls into it without touching other symbols', async () => {
+    const controllerBefore = await symbol('api/controllers/patientsController.ts', 'enrollHandler');
+    const servicePath = join(repo, 'api/services/enrollService.ts');
+    writeFileSync(servicePath, `// moved down two lines\n\n${readFileSync(servicePath, 'utf8')}`);
+
+    const result = await indexRepo(repo, config, store);
+    expect(result.changed).toEqual(['api/services/enrollService.ts']);
+    expect(result.refreshed).toEqual(['api/controllers/patientsController.ts']);
+
+    expect((await symbol('api/services/enrollService.ts', 'enrollPatient')).startLine).toBe(37);
+    const controllerAfter = await symbol('api/controllers/patientsController.ts', 'enrollHandler');
+    expect(controllerAfter.id).toBe(controllerBefore.id);
+    const [edge] = (await store.getCallees(controllerAfter.id, 1)).filter((c) => c.calleeText === 'enrollPatient');
+    expect(edge.callee).toMatchObject({ name: 'enrollPatient', startLine: 37 });
+  });
+
+  it('removes deleted files and keeps the edges into them as unresolved after refresh', async () => {
+    rmSync(join(repo, 'api/events/handlers.ts'));
+    const result = await indexRepo(repo, config, store);
+    expect(result.removed).toEqual(['api/events/handlers.ts']);
+    expect(result.refreshed).toEqual(['api/events/bus.ts']);
+    expect(await store.findSymbol('api/events/handlers.ts', 'dispatch')).toEqual([]);
+    expect(await callees('api/events/bus.ts', 'registerEventHandlers')).toContainEqual({ text: 'dispatch', target: 'unresolved' });
+  });
+});

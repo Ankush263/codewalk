@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsup src/index.ts --format esm --clean && tsc --emitDeclarationOnly",
+    "build": "tsup src/index.ts --format esm --clean && tsc --emitDeclarationOnly && node -e \"require('fs').cpSync('src/store/migrations', 'dist/migrations', { recursive: true })\"",
     "dev": "tsup src/index.ts --format esm --watch",
     "typecheck": "tsc --noEmit"
   },
