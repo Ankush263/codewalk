@@ -2,14 +2,17 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { runner } from 'node-pg-migrate';
 import type {
+  CallEdge,
   CalleeRecord,
   CallerRecord,
   FileRecord,
+  ImporterRecord,
   ImportRecord,
   IndexChanges,
   IndexStats,
   SymbolKind,
   SymbolRecord,
+  WalkthroughRecord,
 } from './types.js';
 
 // The only module that talks to Postgres (CLAUDE.md §8.1a). Every connection runs with
@@ -316,10 +319,75 @@ export class Store {
       resolved: r.resolved,
     }));
   }
+
+  /**
+   * Files importing `file`, one row each, with every name they import from it (several import
+   * statements, e.g. `import type` plus a value import, are merged). Feeds a file walkthrough's "who uses it".
+   */
+  async getImportersOf(file: string): Promise<ImporterRecord[]> {
+    const { rows } = await this.pool.query<ImporterRecord>(
+      `SELECT f.path AS file,
+              COALESCE(array_agg(DISTINCT n.name ORDER BY n.name) FILTER (WHERE n.name IS NOT NULL), '{}') AS "importedNames"
+       FROM imports i
+       JOIN files f ON f.id = i.file_id
+       LEFT JOIN LATERAL unnest(i.imported_names) AS n(name) ON true
+       WHERE i.resolved_path = $1
+       GROUP BY f.path
+       ORDER BY f.path`,
+      [file],
+    );
+    return rows;
+  }
+
+  /** Resolved calls whose caller and callee both live in `file`, in one query for the whole file. */
+  async getCallEdgesInFile(file: string): Promise<CallEdge[]> {
+    const { rows } = await this.pool.query<{ caller_symbol_id: string; callee_symbol_id: string }>(
+      `SELECT DISTINCT c.caller_symbol_id, c.callee_symbol_id
+       FROM calls c
+       JOIN symbols caller ON caller.id = c.caller_symbol_id
+       JOIN symbols callee ON callee.id = c.callee_symbol_id
+       JOIN files f ON f.id = caller.file_id
+       WHERE f.path = $1 AND callee.file_id = caller.file_id
+       ORDER BY 1, 2`,
+      [file],
+    );
+    return rows.map((r) => ({ callerId: Number(r.caller_symbol_id), calleeId: Number(r.callee_symbol_id) }));
+  }
+
+  /**
+   * Inserts or replaces the saved walkthrough of one scope. Saving identical content (e.g. a cache hit)
+   * is a no-op, so created_at stays the time the content last changed.
+   */
+  async saveWalkthrough(w: { scopeKind: string; scopeRef: string; contentHash: string; content: unknown }): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO walkthroughs (scope_kind, scope_ref, content_hash, content)
+       VALUES ($1, $2, $3, $4::jsonb)
+       ON CONFLICT (scope_kind, scope_ref)
+       DO UPDATE SET content_hash = EXCLUDED.content_hash, content = EXCLUDED.content, created_at = now()
+       WHERE walkthroughs.content IS DISTINCT FROM EXCLUDED.content`,
+      [w.scopeKind, w.scopeRef, w.contentHash, JSON.stringify(w.content)],
+    );
+  }
+
+  async getWalkthrough(scopeKind: string, scopeRef: string): Promise<WalkthroughRecord | null> {
+    const { rows } = await this.pool.query<WalkthroughRecord>(
+      `${SELECT_WALKTHROUGH} WHERE scope_kind = $1 AND scope_ref = $2`,
+      [scopeKind, scopeRef],
+    );
+    return rows[0] ?? null;
+  }
+
+  async listWalkthroughs(): Promise<WalkthroughRecord[]> {
+    const { rows } = await this.pool.query<WalkthroughRecord>(`${SELECT_WALKTHROUGH} ORDER BY scope_kind, scope_ref`);
+    return rows;
+  }
 }
 
 const SELECT_SYMBOL = `SELECT s.id, f.path AS file, s.name, s.kind, s.start_line, s.end_line, s.exported, s.signature
   FROM symbols s JOIN files f ON f.id = s.file_id`;
+
+const SELECT_WALKTHROUGH = `SELECT scope_kind AS "scopeKind", scope_ref AS "scopeRef", content_hash AS "contentHash",
+  content, created_at AS "createdAt" FROM walkthroughs`;
 
 interface SymbolRow {
   id: string; // BIGINT arrives as a string from node-postgres

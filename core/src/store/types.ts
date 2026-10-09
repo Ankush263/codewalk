@@ -103,3 +103,25 @@ export interface CalleeRecord {
   callLine: number;
   resolved: boolean;
 }
+
+export interface ImporterRecord {
+  /** Repo-relative file containing the import. */
+  file: string;
+  importedNames: string[];
+}
+
+/** A resolved call between two symbols. */
+export interface CallEdge {
+  callerId: number;
+  calleeId: number;
+}
+
+export interface WalkthroughRecord {
+  scopeKind: string;
+  scopeRef: string;
+  contentHash: string;
+  /** The saved walkthrough as JSON; its shape belongs to core/src/walkthrough. */
+  content: unknown;
+  /** When it was last saved. */
+  createdAt: Date;
+}

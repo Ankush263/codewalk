@@ -2,6 +2,7 @@ import { dirname, join } from 'node:path';
 import type { FnContext } from '../context/fn.js';
 import { DocsResolver, type DocLink } from '../docs/resolve.js';
 import { generateFnWalkthrough, type LlmProvider } from '../llm/generate.js';
+import type { FnPromptOptions } from '../llm/prompt.js';
 import type { Step } from '../llm/schema.js';
 import { verifyFnWalkthrough, type DroppedStep, type VerifyResult } from '../verify/verify.js';
 
@@ -33,8 +34,8 @@ export class NoVerifiedStepsError extends Error {
   }
 }
 
-export async function explainFn(provider: LlmProvider, ctx: FnContext, repoRoot: string): Promise<FnWalkthrough> {
-  const { walkthrough, attempts } = await generateFnWalkthrough(provider, ctx);
+export async function explainFn(provider: LlmProvider, ctx: FnContext, repoRoot: string, options: FnPromptOptions = {}): Promise<FnWalkthrough> {
+  const { walkthrough, attempts } = await generateFnWalkthrough(provider, ctx, options);
   const verified = verifyFnWalkthrough(walkthrough, ctx);
   const keptSteps = verified.walkthrough.stages.reduce((n, s) => n + s.steps.length, 0);
   if (keptSteps === 0) throw new NoVerifiedStepsError(verified.dropped);

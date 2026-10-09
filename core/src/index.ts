@@ -5,4 +5,5 @@ export { indexRepo, type IndexResult } from './indexer/index.js';
 export * from './llm/index.js';
 export * from './store/index.js';
 export * from './verify/index.js';
-export { explainFn, NoVerifiedStepsError, type FnWalkthrough, type WalkthroughStep } from './walkthrough/fn.js';
+export * from './walkthrough/index.js';
+export { renderMarkdown } from './render/markdown.js';

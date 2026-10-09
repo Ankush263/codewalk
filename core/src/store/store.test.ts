@@ -197,6 +197,66 @@ describe('store', () => {
     await store.applyIndexChanges({ callRefreshes: [{ path: 'api/controller.ts', calls: refreshedCalls }] });
     expect(await store.getCallees(handleAfter.id, 1)).toHaveLength(1);
   });
+
+  it('lists the files importing a file, with the names they import', async () => {
+    expect(await store.getImportersOf('api/service.ts')).toEqual([{ file: 'api/controller.ts', importedNames: ['enroll'] }]);
+    expect(await store.getImportersOf('api/controller.ts')).toEqual([]);
+  });
+
+  it('lists a file that imports another twice (e.g. type and value imports) once, with all names', async () => {
+    const twice: FileFacts = {
+      path: 'api/twice.ts',
+      hash: 'hash-twice',
+      language: 'typescript',
+      symbols: [],
+      calls: [],
+      imports: [
+        { importedPath: './service', resolvedPath: 'api/service.ts', importedNames: ['normalize'], packageName: null, packageVersion: null },
+        { importedPath: './service', resolvedPath: 'api/service.ts', importedNames: ['enroll', 'normalize'], packageName: null, packageVersion: null },
+      ],
+    };
+    await store.applyIndexChanges({ files: [twice] });
+    try {
+      expect(await store.getImportersOf('api/service.ts')).toEqual([
+        { file: 'api/controller.ts', importedNames: ['enroll'] },
+        { file: 'api/twice.ts', importedNames: ['enroll', 'normalize'] },
+      ]);
+    } finally {
+      await store.applyIndexChanges({ removedPaths: ['api/twice.ts'] });
+    }
+  });
+
+  it('returns resolved call edges within one file only', async () => {
+    const names = new Map((await store.getSymbolsInFile('api/service.ts')).map((s) => [s.id, s.name]));
+    const edges = (await store.getCallEdgesInFile('api/service.ts')).map((e) => `${names.get(e.callerId)}->${names.get(e.calleeId)}`);
+    expect(edges.sort()).toEqual(['enroll->normalize', 'ping->pong', 'pong->ping']);
+    // handle -> enroll crosses files, so the controller has no in-file edges.
+    expect(await store.getCallEdgesInFile('api/controller.ts')).toEqual([]);
+  });
+
+  it('saves one walkthrough per scope and replaces it on re-save', async () => {
+    expect(await store.getWalkthrough('fn', 'api/service.ts#enroll')).toBeNull();
+
+    await store.saveWalkthrough({ scopeKind: 'fn', scopeRef: 'api/service.ts#enroll', contentHash: 'h1', content: { v: 1 } });
+    await store.saveWalkthrough({ scopeKind: 'fn', scopeRef: 'api/service.ts#enroll', contentHash: 'h2', content: { v: 2 } });
+    await store.saveWalkthrough({ scopeKind: 'file', scopeRef: 'api/service.ts', contentHash: 'h3', content: { v: 3 } });
+
+    const saved = await store.getWalkthrough('fn', 'api/service.ts#enroll');
+    expect(saved).toMatchObject({ scopeKind: 'fn', scopeRef: 'api/service.ts#enroll', contentHash: 'h2', content: { v: 2 } });
+    expect(saved!.createdAt).toBeInstanceOf(Date);
+    expect((await store.listWalkthroughs()).map((w) => `${w.scopeKind} ${w.scopeRef}`)).toEqual(['file api/service.ts', 'fn api/service.ts#enroll']);
+  });
+
+  it('keeps the saved time when the same content is saved again', async () => {
+    const save = (v: number) => store.saveWalkthrough({ scopeKind: 'fn', scopeRef: 'api/service.ts#ping', contentHash: `h${v}`, content: { v } });
+    await save(1);
+    const first = (await store.getWalkthrough('fn', 'api/service.ts#ping'))!.createdAt;
+    await new Promise((r) => setTimeout(r, 20));
+    await save(1);
+    expect((await store.getWalkthrough('fn', 'api/service.ts#ping'))!.createdAt).toEqual(first);
+    await save(2);
+    expect((await store.getWalkthrough('fn', 'api/service.ts#ping'))!.createdAt.getTime()).toBeGreaterThan(first.getTime());
+  });
 });
 
 describe('openStore', () => {

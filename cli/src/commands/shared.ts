@@ -5,8 +5,12 @@ import {
   ConfigError,
   DatabaseUnreachableError,
   findRepoRoot,
+  LlmOutputError,
+  LlmRequestError,
   loadConfig,
+  NoVerifiedStepsError,
   openStore,
+  TargetError,
   type IndexResult,
   type Store,
   type WalkConfig,
@@ -98,4 +102,18 @@ function describeCause(cause: unknown): string {
   if (cause instanceof AggregateError && cause.errors.length > 0) return describeCause(cause.errors[0]);
   if (cause instanceof Error) return cause.message || cause.name;
   return String(cause);
+}
+
+/** Prints known, user-fixable errors and returns 1; anything else is a bug and is rethrown. */
+export function reportError(err: unknown, io: IO): number {
+  if (err instanceof TargetError || err instanceof LlmRequestError || err instanceof LlmOutputError) {
+    io.error(`✖ ${err.message}`);
+    return 1;
+  }
+  if (err instanceof NoVerifiedStepsError) {
+    io.error(`✖ ${err.message}`);
+    for (const d of err.dropped) io.error(`  ${d.stepId}: ${d.reasons.join('; ')}`);
+    return 1;
+  }
+  throw err;
 }

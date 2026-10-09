@@ -1,4 +1,4 @@
-import type { CodeBlock, FnContext, FnWalkthrough, WalkthroughStep } from '@codewalk/core';
+import type { FileContext, ScopeKind, WalkthroughStatus, CodeBlock, FnContext, FnWalkthrough, WalkthroughStep } from '@codewalk/core';
 
 // Plain-text renderings: the `--no-llm` facts and the non-interactive walkthrough (piped output).
 
@@ -22,8 +22,20 @@ export function formatFacts(ctx: FnContext): string {
   return out.join('\n');
 }
 
-export function formatWalkthrough(w: FnWalkthrough, codeLines: (file: string) => string[]): string {
+export function formatFileFacts(ctx: FileContext): string {
+  const out = [`file ${ctx.file} — ${ctx.lineCount} lines`];
+  section(out, 'Imported by', ctx.importers.map((i) => `${i.file}${i.importedNames.length ? `  (${i.importedNames.join(', ')})` : ''}`));
+  section(out, 'Exports', ctx.exports.map((s) => `${s.kind} ${s.name}  ${s.file}:${s.startLine}`));
+  section(out, 'Internal helpers', ctx.helpers.map((s) => `${s.kind} ${s.name}  ${s.file}:${s.startLine}`));
+  section(out, 'Walk order (helpers first)', ctx.order.map((s, i) => `${i + 1}. ${s.name}  ${s.file}:${s.startLine}-${s.endLine}`));
+  section(out, 'Call cycles', ctx.cycleBreaks);
+  section(out, 'Warnings', ctx.warnings);
+  return out.join('\n');
+}
+
+export function formatWalkthrough(w: FnWalkthrough, codeLines: (file: string) => string[], notes: string[] = []): string {
   const out: string[] = [w.title, '', w.summary];
+  if (notes.length) out.push('', ...notes);
   const total = w.stages.reduce((n, s) => n + s.steps.length, 0);
   let index = 0;
   for (const stage of w.stages) {
@@ -91,4 +103,36 @@ function calleeTree(ctx: FnContext): string[] {
 function section(out: string[], title: string, lines: string[]) {
   if (lines.length === 0) return;
   out.push('', title, ...lines.map((l) => `  ${l}`));
+}
+
+export interface ListRow {
+  scopeKind: ScopeKind;
+  scopeRef: string;
+  savedAt: Date;
+  status: WalkthroughStatus;
+}
+
+export function formatList(rows: ListRow[]): string {
+  if (rows.length === 0) return 'No saved walkthroughs yet. Run `walk fn` or `walk file` to create one.';
+  const width = Math.max(...rows.map((r) => r.scopeRef.length));
+  return rows
+    .map((r) => {
+      const s = r.status;
+      const detail = s.fresh ? `${s.totalSteps} steps` : staleDetail(s);
+      const saved = new Date(r.savedAt).toISOString().slice(0, 16).replace('T', ' ');
+      return `${s.fresh ? 'fresh' : 'stale'}  ${r.scopeKind.padEnd(4)}  ${r.scopeRef.padEnd(width)}  ${detail} · saved ${saved}`;
+    })
+    .join('\n');
+}
+
+function staleDetail(s: WalkthroughStatus): string {
+  const label = (x: WalkthroughStatus['sections'][number]) => x.symbol ?? `${x.file} lines`;
+  const changed = s.sections.filter((x) => x.state === 'changed').map(label);
+  const removed = s.sections.filter((x) => x.state === 'missing').map(label);
+  const parts = [`${s.staleSteps}/${s.totalSteps} steps stale`];
+  if (s.fileRemoved) parts.push('file removed');
+  if (changed.length) parts.push(`changed: ${changed.join(', ')}`);
+  if (removed.length) parts.push(`removed: ${removed.join(', ')}`);
+  if (s.uncovered.length) parts.push(`not covered: ${s.uncovered.join(', ')}`);
+  return parts.join(' · ');
 }

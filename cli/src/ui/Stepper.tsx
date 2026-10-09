@@ -10,6 +10,8 @@ const CONTEXT_LINES = 3;
 export interface StepperProps {
   walkthrough: FnWalkthrough;
   codeLines: (file: string) => string[];
+  /** Extra overview lines, e.g. a file's importers and exports. */
+  notes?: string[];
 }
 
 interface Screen {
@@ -29,7 +31,7 @@ export function navigate(index: number, count: number, input: string, key: { lef
   return index;
 }
 
-export function Stepper({ walkthrough, codeLines }: StepperProps) {
+export function Stepper({ walkthrough, codeLines, notes = [] }: StepperProps) {
   const { exit } = useApp();
   const screens = screensOf(walkthrough);
   const [index, setIndex] = useState(0);
@@ -43,7 +45,7 @@ export function Stepper({ walkthrough, codeLines }: StepperProps) {
   return (
     <Box flexDirection="column">
       {index === 0 ? (
-        <Overview walkthrough={walkthrough} />
+        <Overview walkthrough={walkthrough} notes={notes} />
       ) : (
         <StepView screen={screens[index - 1]} number={index} total={screens.length} codeLines={codeLines} />
       )}
@@ -54,7 +56,7 @@ export function Stepper({ walkthrough, codeLines }: StepperProps) {
   );
 }
 
-export function Overview({ walkthrough: w }: { walkthrough: FnWalkthrough }) {
+export function Overview({ walkthrough: w, notes = [] }: { walkthrough: FnWalkthrough; notes?: string[] }) {
   const v = w.verification;
   return (
     <Box flexDirection="column" marginBottom={1}>
@@ -65,6 +67,15 @@ export function Overview({ walkthrough: w }: { walkthrough: FnWalkthrough }) {
       <Box marginTop={1}>
         <Text>{w.summary}</Text>
       </Box>
+      {notes.length > 0 && (
+        <Box marginTop={1} flexDirection="column">
+          {notes.map((n, i) => (
+            <Text key={i} dimColor>
+              {n}
+            </Text>
+          ))}
+        </Box>
+      )}
       <Box marginTop={1} flexDirection="column">
         {w.stages.map((s, i) => (
           <Text key={i}>

@@ -1,29 +1,29 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { createElement } from 'react';
-import { render } from 'ink';
 import {
   AnthropicProvider,
   buildFnContext,
-  explainFn,
+  fnScopeRef,
+  generateSection,
   indexRepo,
-  LlmOutputError,
-  LlmRequestError,
-  NoVerifiedStepsError,
+  loadSavedWalkthrough,
   parseFnTarget,
-  TargetError,
-  type FnWalkthrough,
+  persistWalkthrough,
+  reuseSection,
+  SAVED_VERSION,
+  sourceFiles,
   type LlmProvider,
+  type SavedWalkthrough,
 } from '@codewalk/core';
-import { Stepper } from '../ui/Stepper.js';
-import { formatFacts, formatWalkthrough } from '../ui/format.js';
-import { connectStore, loadRepo, type IO } from './shared.js';
+import { formatFacts } from '../ui/format.js';
+import { printWalkthrough, type OutFormat } from '../ui/output.js';
+import { connectStore, loadRepo, reportError, type IO } from './shared.js';
 
 export interface FnOptions {
   /** False with --no-llm: print only the static facts. */
   llm: boolean;
   depth: number;
-  out: 'terminal' | 'json';
+  out: OutFormat;
+  /** Ignore the saved walkthrough and regenerate (--refresh). */
+  refresh: boolean;
 }
 
 export interface FnDeps {
@@ -39,7 +39,7 @@ export async function runFn(cwd: string, targetArg: string, options: FnOptions, 
   try {
     target = parseFnTarget(targetArg);
   } catch (err) {
-    return fail(err, io);
+    return reportError(err, io);
   }
 
   const repo = loadRepo(cwd, io);
@@ -47,7 +47,7 @@ export async function runFn(cwd: string, targetArg: string, options: FnOptions, 
   const store = await connectStore(repo.config, io);
   if (!store) return 1;
 
-  let walkthrough: FnWalkthrough;
+  let saved: SavedWalkthrough;
   try {
     // Facts first: bring the index up to date (a no-op when nothing changed).
     await store.migrate();
@@ -64,45 +64,31 @@ export async function runFn(cwd: string, targetArg: string, options: FnOptions, 
       return 0;
     }
 
-    io.error(`Explaining ${ctx.target.file}:${ctx.target.start}-${ctx.target.end} with ${repo.config.llm.model}…`);
-    const provider = deps.provider ?? new AnthropicProvider(repo.config.llm.model);
-    walkthrough = await explainFn(provider, ctx, repo.repoRoot);
+    // Cached by the content of the explained code (CLAUDE.md §9): unchanged code is not re-sent.
+    const scopeRef = fnScopeRef(target);
+    const previous = options.refresh ? null : await loadSavedWalkthrough(store, 'fn', scopeRef);
+    const current = { start: ctx.target.start, end: ctx.target.end, lines: ctx.target.code.lines };
+    let section = previous && reuseSection(previous.sections[0], current, sourceFiles(repo.repoRoot), options.depth);
+    if (section) {
+      io.error(`Code unchanged since ${section.generatedAt}: showing the saved walkthrough (--refresh to regenerate).`);
+    } else {
+      io.error(`Explaining ${ctx.target.file}:${ctx.target.start}-${ctx.target.end} with ${repo.config.llm.model}…`);
+      const provider = deps.provider ?? new AnthropicProvider(repo.config.llm.model);
+      section = await generateSection(provider, ctx, repo.repoRoot, {
+        symbol: target.kind === 'symbol' ? target.name : null,
+        model: repo.config.llm.model,
+        depth: options.depth,
+      });
+    }
+    saved = { version: SAVED_VERSION, scopeKind: 'fn', scopeRef, overview: null, sections: [section] };
+    const paths = await persistWalkthrough(store, repo.repoRoot, saved);
+    io.error(`Saved ${paths.markdown}`);
   } catch (err) {
-    return fail(err, io);
+    return reportError(err, io);
   } finally {
     await store.close();
   }
 
-  const codeLines = fileReader(repo.repoRoot);
-  if (options.out === 'json') {
-    io.log(JSON.stringify(walkthrough, null, 2));
-  } else if (deps.interactive ?? (process.stdin.isTTY && process.stdout.isTTY)) {
-    const app = render(createElement(Stepper, { walkthrough, codeLines }));
-    await app.waitUntilExit();
-  } else {
-    io.log(formatWalkthrough(walkthrough, codeLines));
-  }
+  await printWalkthrough(saved, options.out, repo.repoRoot, io, deps.interactive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY));
   return 0;
-}
-
-function fileReader(repoRoot: string): (file: string) => string[] {
-  const cache = new Map<string, string[]>();
-  return (file) => {
-    if (!cache.has(file)) cache.set(file, readFileSync(join(repoRoot, file), 'utf8').split(/\r?\n/));
-    return cache.get(file)!;
-  };
-}
-
-/** Prints known, user-fixable errors and returns 1; anything else is a bug and is rethrown. */
-function fail(err: unknown, io: IO): number {
-  if (err instanceof TargetError || err instanceof LlmRequestError || err instanceof LlmOutputError) {
-    io.error(`✖ ${err.message}`);
-    return 1;
-  }
-  if (err instanceof NoVerifiedStepsError) {
-    io.error(`✖ ${err.message}`);
-    for (const d of err.dropped) io.error(`  ${d.stepId}: ${d.reasons.join('; ')}`);
-    return 1;
-  }
-  throw err;
 }

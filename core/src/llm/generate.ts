@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { FnContext } from '../context/fn.js';
-import { FN_SYSTEM_PROMPT, renderFnPrompt } from './prompt.js';
+import { FN_SYSTEM_PROMPT, renderFnPrompt, type FnPromptOptions } from './prompt.js';
 import { walkthroughSchema, type Walkthrough } from './schema.js';
 
 export interface LlmMessage {
@@ -32,8 +32,8 @@ export interface GenerateResult {
 const MAX_RETRIES = 2;
 
 /** Asks for a walkthrough of `ctx`; a response that fails the §8.2 schema is re-requested up to twice. */
-export async function generateFnWalkthrough(provider: LlmProvider, ctx: FnContext): Promise<GenerateResult> {
-  const messages: LlmMessage[] = [{ role: 'user', content: renderFnPrompt(ctx) }];
+export async function generateFnWalkthrough(provider: LlmProvider, ctx: FnContext, options: FnPromptOptions = {}): Promise<GenerateResult> {
+  const messages: LlmMessage[] = [{ role: 'user', content: renderFnPrompt(ctx, options) }];
   let lastProblem = '';
 
   for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {

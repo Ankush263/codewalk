@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { Command, InvalidArgumentError, Option } from 'commander';
-import { runFn } from './commands/fn.js';
+import { runFile, type FileOptions } from './commands/file.js';
+import { runFn, type FnOptions } from './commands/fn.js';
+import { runList } from './commands/list.js';
 import { runIndex } from './commands/index.js';
 import { runInit } from './commands/init.js';
 import { loadCodewalkEnv } from './commands/shared.js';
@@ -33,9 +35,30 @@ program
   .argument('<target>', 'e.g. api/services/enrollService.ts#enrollPatient or api/app.ts:10-24')
   .option('--no-llm', 'print only the static facts')
   .option('--depth <n>', 'how many levels of callees to include', parseDepth, 2)
-  .addOption(new Option('--out <format>', 'output format').choices(['terminal', 'json']).default('terminal'))
-  .action(async (target: string, opts: { llm: boolean; depth: number; out: 'terminal' | 'json' }) => {
+  .option('--refresh', 'ignore the saved walkthrough and regenerate', false)
+  .addOption(new Option('--out <format>', 'output format').choices(['terminal', 'json', 'md']).default('terminal'))
+  .action(async (target: string, opts: FnOptions) => {
     process.exitCode = await runFn(process.cwd(), target, opts, io);
+  });
+
+program
+  .command('file')
+  .description('walkthrough of a whole file: every function, helpers first')
+  .argument('<file>', 'e.g. api/services/enrollService.ts')
+  .option('--no-llm', 'print only the static facts')
+  .option('--depth <n>', 'how many levels of callees to include per function', parseDepth, 2)
+  .option('--refresh', 'ignore saved walkthroughs and regenerate every function', false)
+  .addOption(new Option('--out <format>', 'output format').choices(['terminal', 'json', 'md']).default('terminal'))
+  .action(async (file: string, opts: FileOptions) => {
+    process.exitCode = await runFile(process.cwd(), file, opts, io);
+  });
+
+program
+  .command('list')
+  .description('list saved walkthroughs and whether the code they explain has changed')
+  .addOption(new Option('--out <format>', 'output format').choices(['terminal', 'json']).default('terminal'))
+  .action(async (opts: { out: 'terminal' | 'json' }) => {
+    process.exitCode = await runList(process.cwd(), opts, io);
   });
 
 await program.parseAsync();

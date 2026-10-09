@@ -36,3 +36,13 @@ export function parseFnTarget(arg: string): FnTarget {
 function normalizeFile(file: string): string {
   return file.trim().split('\\').join('/').replace(/^\.\//, '');
 }
+
+/** Parses the argument of `walk file`: a repo-relative path. */
+export function parseFileTarget(arg: string): string {
+  const file = normalizeFile(arg);
+  if (!file) throw new TargetError('Expected a file path, e.g. api/services/enrollService.ts');
+  if (file.includes('#') || RANGE.test(file)) {
+    throw new TargetError(`"${arg}" names a function or line range; use \`walk fn ${arg}\` instead.`);
+  }
+  return file;
+}

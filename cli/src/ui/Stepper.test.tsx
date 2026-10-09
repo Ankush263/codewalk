@@ -64,4 +64,9 @@ describe('Stepper', () => {
     expect(text).toContain('https://expressjs.com/en/4x/api.html#res.json');
     expect(text).toContain('! throws on empty input');
   });
+
+  it('renders overview notes under the summary', () => {
+    const text = renderToString(<Overview walkthrough={walkthrough} notes={['Imported by: api/y.ts (normalize)']} />, { columns: 100 });
+    expect(text).toContain('Imported by: api/y.ts (normalize)');
+  });
 });

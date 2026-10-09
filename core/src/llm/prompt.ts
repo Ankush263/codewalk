@@ -20,7 +20,15 @@ Rules:
 - Group steps into a few named "stages" (e.g. "Validate input", "Persist", "Respond"). Step ids are unique, e.g. "s1", "s2".
 - "unresolved": copy every note listed under "Unresolved calls", plus anything else you could not determine.`;
 
-export function renderFnPrompt(ctx: FnContext): string {
+export interface FnPromptOptions {
+  /** `walk file`: this function is one of several, so keep its walkthrough short (CLAUDE.md §6.2). */
+  condensed?: boolean;
+}
+
+const CONDENSED =
+  'Keep it condensed: this function is one of several in a file walkthrough. Use at most 5 steps, each covering a meaningful group of lines.';
+
+export function renderFnPrompt(ctx: FnContext, options: FnPromptOptions = {}): string {
   const { target } = ctx;
   const out: string[] = [];
   const kind = target.symbol ? `${target.symbol.kind} ${target.symbol.name}` : 'code block';
@@ -90,6 +98,7 @@ export function renderFnPrompt(ctx: FnContext): string {
   for (const [file, lines] of Object.entries(ctx.files)) out.push(`- ${file}: ${lines} lines`);
 
   out.push(`Write the walkthrough of ${target.file}:${target.start}-${target.end}.`);
+  if (options.condensed) out.push(CONDENSED);
   return out.join('\n\n');
 }
 

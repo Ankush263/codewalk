@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -17,7 +17,7 @@ function captureIO() {
 }
 
 const recorded: LlmProvider = { generate: async () => RECORDED };
-const opts = (o: Partial<FnOptions> = {}): FnOptions => ({ llm: true, depth: 2, out: 'terminal', ...o });
+const opts = (o: Partial<FnOptions> = {}): FnOptions => ({ llm: true, depth: 2, out: 'terminal', refresh: false, ...o });
 
 describe('walk fn', () => {
   let repo: string;
@@ -72,6 +72,7 @@ describe('walk fn', () => {
     expect(await runFn(repo, TARGET, opts({ out: 'json' }), io, { provider: recorded })).toBe(0);
     const w = JSON.parse(out.join('\n'));
     expect(w.verification.keptSteps).toBe(13);
+    expect(w.overview).toBeNull();
     expect(w.stages[0].steps[0].docLinks).toEqual([]);
   });
 
@@ -88,7 +89,44 @@ describe('walk fn', () => {
   it('reports LLM failures', async () => {
     const { io, err } = captureIO();
     const broken: LlmProvider = { generate: async () => 'not json' };
-    expect(await runFn(repo, TARGET, opts(), io, { provider: broken, interactive: false })).toBe(1);
+    expect(await runFn(repo, TARGET, opts({ refresh: true }), io, { provider: broken, interactive: false })).toBe(1);
     expect(err.at(-1)).toMatch(/invalid output 3 times/);
+  });
+
+  it('reuses the saved walkthrough when the code is unchanged', async () => {
+    const { io, err } = captureIO();
+    const unused: LlmProvider = { generate: async () => { throw new Error('should not be called'); } };
+    expect(await runFn(repo, TARGET, opts(), io, { provider: unused, interactive: false })).toBe(0);
+    expect(err.join('\n')).toContain('showing the saved walkthrough');
+  });
+
+  it('regenerates when --depth differs from the saved walkthrough', async () => {
+    let calls = 0;
+    const counting: LlmProvider = { generate: async () => { calls++; return RECORDED; } };
+    const { io, err } = captureIO();
+    expect(await runFn(repo, TARGET, opts({ depth: 3, out: 'json' }), io, { provider: counting })).toBe(0);
+    expect(calls).toBe(1);
+    expect(err.join('\n')).toContain('Explaining');
+    // And the depth-3 walkthrough is now the saved one: depth 3 again reuses it.
+    expect(await runFn(repo, TARGET, opts({ depth: 3, out: 'json' }), captureIO().io, { provider: counting })).toBe(0);
+    expect(calls).toBe(1);
+  });
+
+  it('--refresh regenerates even when the code is unchanged', async () => {
+    let calls = 0;
+    const counting: LlmProvider = { generate: async () => { calls++; return RECORDED; } };
+    expect(await runFn(repo, TARGET, opts({ refresh: true, out: 'json' }), captureIO().io, { provider: counting })).toBe(0);
+    expect(calls).toBe(1);
+  });
+
+  it('--out md prints Markdown, and the walkthrough is mirrored to .walkthrough/walkthroughs', async () => {
+    const { io, out, err } = captureIO();
+    expect(await runFn(repo, TARGET, opts({ out: 'md' }), io, { provider: recorded })).toBe(0);
+    const md = out.join('\n');
+    expect(md).toMatch(/^# /);
+    expect(md).toContain('```ts\n36 | ');
+    expect(err.join('\n')).toMatch(/Saved \.walkthrough\/walkthroughs\/fn--api_services_enrollService\.ts_enrollPatient--[0-9a-f]{8}\.md/);
+    const files = readdirSync(join(repo, '.walkthrough', 'walkthroughs'));
+    expect(files.filter((f) => f.startsWith('fn--')).map((f) => f.split('.').pop()).sort()).toEqual(['json', 'md']);
   });
 });
