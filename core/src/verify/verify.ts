@@ -1,0 +1,127 @@
+import type { FnContext } from '../context/fn.js';
+import type { Step, Walkthrough } from '../llm/schema.js';
+
+// The verifier (CLAUDE.md §8.3). Every location a step cites must be a real line of a file in the
+// context, and every identifier its explanation names in backticks must appear in the context's
+// code or facts. Failing steps are dropped and reported; docs for packages the target doesn't
+// import are removed.
+
+export interface DroppedStep {
+  stepId: string;
+  reasons: string[];
+}
+
+export interface VerifyResult {
+  walkthrough: Walkthrough;
+  dropped: DroppedStep[];
+  /** Docs entries removed because their package is not imported by the target file. */
+  removedDocs: { stepId: string; package: string; symbol: string }[];
+}
+
+// Words that can appear in an explanation's code spans without being declared anywhere.
+const LANGUAGE_WORDS = new Set([
+  'true', 'false', 'null', 'undefined', 'NaN', 'Infinity', 'this', 'super',
+  'await', 'async', 'return', 'throw', 'new', 'typeof', 'instanceof', 'in', 'of', 'void', 'delete',
+  'const', 'let', 'var', 'function', 'class', 'if', 'else', 'try', 'catch', 'finally', 'for', 'while',
+  'switch', 'case', 'break', 'continue', 'import', 'export', 'default', 'from', 'as', 'type', 'interface',
+]);
+
+export function verifyFnWalkthrough(walkthrough: Walkthrough, ctx: FnContext): VerifyResult {
+  const vocabulary = buildVocabulary(ctx);
+  const packages = new Set(ctx.packages.map((p) => p.name));
+  const dropped: DroppedStep[] = [];
+  const removedDocs: VerifyResult['removedDocs'] = [];
+
+  const stages = walkthrough.stages
+    .map((stage) => ({
+      ...stage,
+      steps: stage.steps.flatMap((step): Step[] => {
+        const reasons = checkStep(step, ctx.files, vocabulary);
+        if (reasons.length > 0) {
+          dropped.push({ stepId: step.id, reasons });
+          return [];
+        }
+        const docs = step.docs.filter((d) => {
+          if (packages.has(d.package)) return true;
+          removedDocs.push({ stepId: step.id, ...d });
+          return false;
+        });
+        return [{ ...step, docs }];
+      }),
+    }))
+    .filter((stage) => stage.steps.length > 0);
+
+  return { walkthrough: { ...walkthrough, stages }, dropped, removedDocs };
+}
+
+function checkStep(step: Step, files: Record<string, number>, vocabulary: Set<string>): string[] {
+  const reasons: string[] = [];
+  const { file, start, end } = step.code_ref;
+  const lines = files[file];
+  if (lines === undefined) {
+    reasons.push(`code_ref cites ${file}, which is not part of the indexed context`);
+  } else if (start < 1 || end < start || end > lines) {
+    reasons.push(`code_ref ${file}:${start}-${end} is outside the file's lines 1-${lines}`);
+  }
+
+  for (const ref of step.references) {
+    const refLines = files[ref.file];
+    if (refLines === undefined) {
+      reasons.push(`reference ${ref.file}:${ref.line} cites a file that is not part of the indexed context`);
+    } else if (ref.line < 1 || ref.line > refLines) {
+      reasons.push(`reference ${ref.file}:${ref.line} is outside the file's lines 1-${refLines}`);
+    }
+  }
+
+  const unknown = [...new Set(codeSpans(step.explanation).flatMap(identifiers))].filter((id) => !vocabulary.has(id));
+  if (unknown.length > 0) {
+    reasons.push(`explanation names identifiers not found in the code or index: ${unknown.map((u) => `\`${u}\``).join(', ')}`);
+  }
+  return reasons;
+}
+
+/** Every identifier that appears in the context's code and facts. */
+export function buildVocabulary(ctx: FnContext): Set<string> {
+  const vocabulary = new Set(LANGUAGE_WORDS);
+  const add = (text: string | null | undefined) => {
+    if (text) for (const id of identifiers(text)) vocabulary.add(id);
+  };
+
+  const blocks = [
+    ctx.target.code,
+    ...ctx.callers.map((c) => c.code),
+    ...ctx.callees.map((c) => c.code),
+    ...ctx.types.map((t) => t.code),
+    ...ctx.values.map((v) => v.code),
+  ];
+  for (const block of blocks) if (block) add(block.lines.join('\n'));
+
+  const symbols = [
+    ...(ctx.target.symbol ? [ctx.target.symbol] : []),
+    ...ctx.innerSymbols,
+    ...ctx.callers.map((c) => c.symbol),
+    ...ctx.callees.flatMap((c) => (c.callee ? [c.callee] : [])),
+    ...ctx.types.map((t) => t.symbol),
+  ];
+  for (const s of symbols) {
+    add(s.name);
+    add(s.signature);
+  }
+  for (const c of ctx.callees) add(c.calleeText);
+  for (const v of ctx.values) add(v.name);
+  for (const p of ctx.packages) {
+    add(p.name);
+    for (const name of p.importedNames) add(name);
+  }
+  return vocabulary;
+}
+
+/** Contents of `inline code` spans. */
+export function codeSpans(text: string): string[] {
+  return [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+}
+
+/** Identifiers in a code fragment. Escapes (\D, \n) are skipped; string contents count as code. */
+export function identifiers(code: string): string[] {
+  return code.replace(/\\./g, ' ').match(/[A-Za-z_$][\w$]*/g) ?? [];
+}

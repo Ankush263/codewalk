@@ -1,0 +1,398 @@
+{
+    "title": "enrollPatient: validate, persist, and publish a new patient enrollment",
+    "summary": "`enrollPatient` normalizes and validates a new patient's phone and age, rejects duplicates and minors, then persists the patient and their consent record inside a Postgres transaction, caches the result in Redis, emits a domain event, and returns the created `Patient`. On failure it rolls back the transaction and always releases the pooled client.",
+    "stages": [
+        {
+            "name": "Validate input",
+            "steps": [
+                {
+                    "id": "s1",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 36,
+                        "end": 37
+                    },
+                    "explanation": "Calls `normalizePhone(input.phone)` to strip non-digit characters and keep only the last 10 digits, producing a canonical `phone`. Calls `calculateAge(input.dateOfBirth)` to compute the patient's age in whole years as of now (`today` defaults to `new Date()`).",
+                    "example": {
+                        "input": "input = { firstName: 'Jane', lastName: 'Doe', phone: '(555) 123-4567', dateOfBirth: '1990-05-01' }, enrolledBy = 'nurse-42'",
+                        "state_after": "phone = '5551234567'; age = 34 (assuming today is 2024-06-01, since the June birthday month has already passed the May birth month)"
+                    },
+                    "references": [
+                        {
+                            "file": "api/services/enrollService.ts",
+                            "line": 17,
+                            "role": "callee"
+                        },
+                        {
+                            "file": "api/services/enrollService.ts",
+                            "line": 23,
+                            "role": "callee"
+                        }
+                    ],
+                    "docs": [],
+                    "concepts": [
+                        "input normalization",
+                        "derived value computation"
+                    ],
+                    "risks": [
+                        "`calculateAge` relies on `new Date(dateOfBirth+...)`; a malformed `dateOfBirth` string could yield `NaN` age"
+                    ]
+                },
+                {
+                    "id": "s2",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 38,
+                        "end": 40
+                    },
+                    "explanation": "If the computed `age` is less than 18, throws a `ConflictError` to reject self-enrollment of minors, stopping execution before any DB work.",
+                    "example": {
+                        "input": "age = 34",
+                        "state_after": "condition `age < 18` is false; execution continues (no error thrown)"
+                    },
+                    "references": [
+                        {
+                            "file": "api/errors.ts",
+                            "line": 22,
+                            "role": "callee"
+                        }
+                    ],
+                    "docs": [],
+                    "concepts": [
+                        "business rule validation",
+                        "fail-fast error handling"
+                    ],
+                    "risks": [
+                        "Throws `ConflictError('Patient must be 18 or older to self-enroll')` for patients under 18"
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Check for existing patient",
+            "steps": [
+                {
+                    "id": "s3",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 42,
+                        "end": 45
+                    },
+                    "explanation": "Looks up any existing patient by the normalized `phone` via `findPatientByPhone(phone)`. If one is found, throws a `ConflictError` to prevent duplicate enrollment.",
+                    "example": {
+                        "input": "phone = '5551234567'",
+                        "state_after": "existing = null (assumed, since no patient with this phone is in the database); no error thrown"
+                    },
+                    "references": [
+                        {
+                            "file": "api/repositories/patientRepository.ts",
+                            "line": 19,
+                            "role": "callee"
+                        },
+                        {
+                            "file": "api/errors.ts",
+                            "line": 22,
+                            "role": "callee"
+                        }
+                    ],
+                    "docs": [],
+                    "concepts": [
+                        "duplicate prevention",
+                        "database read query"
+                    ],
+                    "risks": [
+                        "Throws `ConflictError` if `existing` is truthy",
+                        "Depends on database state not shown here; result of `findPatientByPhone` is assumed"
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Persist patient and consent in a transaction",
+            "steps": [
+                {
+                    "id": "s4",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 47,
+                        "end": 47
+                    },
+                    "explanation": "Acquires a dedicated client from the connection `pool` via `pool.connect()` so subsequent queries run on the same connection, required for transactional `BEGIN`/`COMMIT`/`ROLLBACK`.",
+                    "example": {
+                        "input": "pool (module-level, from api/db/pool.ts)",
+                        "state_after": "client = a connected `PoolClient` (assumed successful connection)"
+                    },
+                    "references": [],
+                    "docs": [
+                        {
+                            "package": "pg",
+                            "symbol": "Pool.connect"
+                        }
+                    ],
+                    "concepts": [
+                        "connection pooling"
+                    ],
+                    "risks": [
+                        "`pool.connect()` can reject if the pool is exhausted or the database is unreachable, which would propagate out of `enrollPatient` since this call is outside the try block"
+                    ]
+                },
+                {
+                    "id": "s5",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 48,
+                        "end": 49
+                    },
+                    "explanation": "Enters the `try` block and issues `BEGIN` on `client` to start a database transaction covering the patient insert and consent insert.",
+                    "example": {
+                        "input": "client (connected)",
+                        "state_after": "a transaction is open on `client`"
+                    },
+                    "references": [],
+                    "docs": [
+                        {
+                            "package": "pg",
+                            "symbol": "client.query"
+                        }
+                    ],
+                    "concepts": [
+                        "database transaction"
+                    ],
+                    "risks": [
+                        "If `client.query('BEGIN')` throws, control jumps to the `catch` block, which issues `ROLLBACK` (on a transaction that was never started) and rethrows"
+                    ]
+                },
+                {
+                    "id": "s6",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 50,
+                        "end": 56
+                    },
+                    "explanation": "Calls `insertPatient(client, {...})` with the patient's `firstName`, `lastName`, normalized `phone`, `dateOfBirth`, and `enrolledBy`, inserting a row into `patients` and returning the created `Patient` (including generated `id` and `createdAt`).",
+                    "example": {
+                        "input": "client, {firstName:'Jane', lastName:'Doe', phone:'5551234567', dateOfBirth:'1990-05-01', enrolledBy:'nurse-42'}",
+                        "state_after": "patient = { id: 'patient-abc123' (assumed, DB-generated), firstName: 'Jane', lastName: 'Doe', phone: '5551234567', dateOfBirth: '1990-05-01', enrolledBy: 'nurse-42', createdAt: '<db timestamp>' (assumed) }"
+                    },
+                    "references": [
+                        {
+                            "file": "api/repositories/patientRepository.ts",
+                            "line": 35,
+                            "role": "callee"
+                        }
+                    ],
+                    "docs": [],
+                    "concepts": [
+                        "database insert",
+                        "returning generated id"
+                    ],
+                    "risks": [
+                        "Query failure (e.g. constraint violation) throws and is caught below, triggering rollback"
+                    ]
+                },
+                {
+                    "id": "s7",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 57,
+                        "end": 57
+                    },
+                    "explanation": "Calls `insertConsent(client, patient.id, enrolledBy)` to record that `enrolledBy` captured consent for the newly created `patient.id`, within the same transaction.",
+                    "example": {
+                        "input": "client, patient.id = 'patient-abc123', enrolledBy = 'nurse-42'",
+                        "state_after": "a consent row is inserted linking `patient_id = 'patient-abc123'` to `captured_by = 'nurse-42'`"
+                    },
+                    "references": [
+                        {
+                            "file": "api/repositories/patientRepository.ts",
+                            "line": 45,
+                            "role": "callee"
+                        }
+                    ],
+                    "docs": [],
+                    "concepts": [
+                        "database insert",
+                        "transactional consistency"
+                    ],
+                    "risks": [
+                        "Failure here leaves the patient insert uncommitted since both are in the same transaction; caught below and rolled back"
+                    ]
+                },
+                {
+                    "id": "s8",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 58,
+                        "end": 58
+                    },
+                    "explanation": "Issues `COMMIT` on `client` to finalize both the patient and consent inserts atomically.",
+                    "example": {
+                        "input": "client (transaction open with uncommitted patient+consent rows)",
+                        "state_after": "transaction committed; patient and consent rows are now permanent in the database"
+                    },
+                    "references": [],
+                    "docs": [
+                        {
+                            "package": "pg",
+                            "symbol": "client.query"
+                        }
+                    ],
+                    "concepts": [
+                        "database transaction"
+                    ],
+                    "risks": [
+                        "If `COMMIT` fails, control goes to `catch`, which issues `ROLLBACK` (which may be a no-op or error since the transaction state is unclear after a failed commit)"
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "Cache, notify, and respond",
+            "steps": [
+                {
+                    "id": "s9",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 60,
+                        "end": 60
+                    },
+                    "explanation": "Caches the newly created `patient` in `redis` under key `patient:${patient.id}` as a JSON string (`JSON.stringify(patient)`), with an expiry of `PATIENT_CACHE_TTL_SECONDS` (300) seconds, so reads can be served from cache for 5 minutes.",
+                    "example": {
+                        "input": "patient.id = 'patient-abc123', patient (object from s6), PATIENT_CACHE_TTL_SECONDS = 300",
+                        "state_after": "redis key 'patient:patient-abc123' set to JSON.stringify(patient) with TTL 300s"
+                    },
+                    "references": [],
+                    "docs": [
+                        {
+                            "package": "ioredis",
+                            "symbol": "redis.set"
+                        }
+                    ],
+                    "concepts": [
+                        "caching",
+                        "TTL expiration"
+                    ],
+                    "risks": [
+                        "If `redis.set` fails, it is not caught by the surrounding `try/catch` scoped to the DB transaction logic here, but is inside the same `try` block, so it will be caught by the `catch` at line 63 and trigger a `ROLLBACK` of an already-committed transaction, then rethrow"
+                    ]
+                },
+                {
+                    "id": "s10",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 61,
+                        "end": 61
+                    },
+                    "explanation": "Emits a `'patient.enrolled'` event on `bus` with the `patient` payload, notifying any registered listeners (e.g. for notifications or analytics) that enrollment succeeded.",
+                    "example": {
+                        "input": "patient (object from s6)",
+                        "state_after": "event 'patient.enrolled' emitted with `patient`; listener behavior is unresolved"
+                    },
+                    "references": [],
+                    "docs": [],
+                    "concepts": [
+                        "event-driven side effects",
+                        "pub/sub"
+                    ],
+                    "risks": [
+                        "Call `bus.emit` is an unresolved dynamic call; listener behavior and failure modes are unknown",
+                        "If a listener throws synchronously, `EventEmitter.emit` would throw here, which would be caught by the surrounding `catch`, issuing a `ROLLBACK` after the transaction was already committed"
+                    ]
+                },
+                {
+                    "id": "s11",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 62,
+                        "end": 62
+                    },
+                    "explanation": "Returns the `patient` object to the caller, completing the function on the success path.",
+                    "example": {
+                        "input": "patient (object from s6)",
+                        "state_after": "function returns patient = { id:'patient-abc123', firstName:'Jane', lastName:'Doe', phone:'5551234567', dateOfBirth:'1990-05-01', enrolledBy:'nurse-42', createdAt: '<db timestamp>' }"
+                    },
+                    "references": [
+                        {
+                            "file": "api/controllers/patientsController.ts",
+                            "line": 10,
+                            "role": "caller"
+                        }
+                    ],
+                    "docs": [],
+                    "concepts": [
+                        "function return value"
+                    ],
+                    "risks": []
+                }
+            ]
+        },
+        {
+            "name": "Error handling and cleanup",
+            "steps": [
+                {
+                    "id": "s12",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 63,
+                        "end": 65
+                    },
+                    "explanation": "If any statement in the `try` block (lines 49-61) throws, the `catch` block issues `ROLLBACK` on `client` to undo any uncommitted work, then rethrows `err` so the caller (`enrollHandler`) can handle it.",
+                    "example": {
+                        "input": "a hypothetical error thrown during `insertPatient`, e.g. a duplicate-phone race condition",
+                        "state_after": "client transaction rolled back; the original error `err` is rethrown"
+                    },
+                    "references": [
+                        {
+                            "file": "api/controllers/patientsController.ts",
+                            "line": 10,
+                            "role": "caller"
+                        }
+                    ],
+                    "docs": [
+                        {
+                            "package": "pg",
+                            "symbol": "client.query"
+                        }
+                    ],
+                    "concepts": [
+                        "transaction rollback",
+                        "error propagation"
+                    ],
+                    "risks": [
+                        "Rollback itself could fail if the connection is already broken, in which case that new error would propagate instead of the original"
+                    ]
+                },
+                {
+                    "id": "s13",
+                    "code_ref": {
+                        "file": "api/services/enrollService.ts",
+                        "start": 66,
+                        "end": 68
+                    },
+                    "explanation": "The `finally` block calls `client.release()` to return the client to the `pool` regardless of success or failure, preventing connection leaks.",
+                    "example": {
+                        "input": "client (from s4)",
+                        "state_after": "client released back to pool; subsequent calls to `pool.connect()` may reuse it"
+                    },
+                    "references": [],
+                    "docs": [
+                        {
+                            "package": "pg",
+                            "symbol": "client.release"
+                        }
+                    ],
+                    "concepts": [
+                        "resource cleanup",
+                        "connection pooling"
+                    ],
+                    "risks": [
+                        "If `client.release()` itself throws, that error would propagate and mask any error from the `catch` block"
+                    ]
+                }
+            ]
+        }
+    ],
+    "unresolved": [
+        "likely bus.emit (dynamic call in enrollPatient at api/services/enrollService.ts:61)"
+    ]
+}

@@ -69,7 +69,7 @@ export async function indexRepo(repoRoot: string, config: WalkConfig, store: Sto
 }
 
 /** Uses the repo's root tsconfig.json for module resolution (paths, baseUrl) when present. */
-function createProject(root: string): Project {
+export function createProject(root: string): Project {
   const tsConfigFilePath = join(root, 'tsconfig.json');
   const overrides = { allowJs: true, noEmit: true, skipLibCheck: true };
   if (existsSync(tsConfigFilePath)) {

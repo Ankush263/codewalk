@@ -75,6 +75,19 @@ export interface SymbolRecord {
   signature: string | null;
 }
 
+export interface FileRecord {
+  path: string;
+  hash: string;
+}
+
+export interface ImportRecord {
+  importedPath: string;
+  resolvedPath: string | null;
+  importedNames: string[];
+  packageName: string | null;
+  packageVersion: string | null;
+}
+
 export interface CallerRecord {
   caller: SymbolRecord;
   callLine: number;

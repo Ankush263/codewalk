@@ -82,6 +82,17 @@ describe('store', () => {
     expect(inRange.map((s) => s.name)).toEqual(['normalize', 'enroll']);
   });
 
+  it('looks up a file, its symbols and its imports', async () => {
+    expect(await store.getFile('api/service.ts')).toEqual({ path: 'api/service.ts', hash: 'hash-service-1' });
+    expect(await store.getFile('api/missing.ts')).toBeNull();
+
+    expect((await store.getSymbolsInFile('api/service.ts')).map((s) => s.name)).toEqual(['normalize', 'enroll', 'ping', 'pong']);
+
+    expect(await store.getImportsForFile('api/service.ts')).toEqual([
+      { importedPath: 'pg', resolvedPath: null, importedNames: ['Pool'], packageName: 'pg', packageVersion: '8.12.0' },
+    ]);
+  });
+
   it('returns direct callers across files', async () => {
     const [enroll] = await store.findSymbol('api/service.ts', 'enroll');
     const callers = await store.getCallers(enroll.id);

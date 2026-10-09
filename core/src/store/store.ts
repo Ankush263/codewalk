@@ -4,6 +4,8 @@ import { runner } from 'node-pg-migrate';
 import type {
   CalleeRecord,
   CallerRecord,
+  FileRecord,
+  ImportRecord,
   IndexChanges,
   IndexStats,
   SymbolKind,
@@ -219,6 +221,34 @@ export class Store {
     } finally {
       client.release();
     }
+  }
+
+  /** The indexed file at `path`, or null if it is not in the index. */
+  async getFile(path: string): Promise<FileRecord | null> {
+    const { rows } = await this.pool.query<FileRecord>('SELECT path, hash FROM files WHERE path = $1', [path]);
+    return rows[0] ?? null;
+  }
+
+  /** Every symbol in `file`, outermost first. */
+  async getSymbolsInFile(file: string): Promise<SymbolRecord[]> {
+    const { rows } = await this.pool.query<SymbolRow>(
+      `${SELECT_SYMBOL} WHERE f.path = $1 ORDER BY s.start_line, s.end_line DESC`,
+      [file],
+    );
+    return rows.map(toSymbolRecord);
+  }
+
+  /** Import declarations of `file`, in source order. */
+  async getImportsForFile(file: string): Promise<ImportRecord[]> {
+    const { rows } = await this.pool.query<ImportRecord>(
+      `SELECT i.imported_path AS "importedPath", i.resolved_path AS "resolvedPath",
+              i.imported_names AS "importedNames", i.package_name AS "packageName",
+              i.package_version AS "packageVersion"
+       FROM imports i JOIN files f ON f.id = i.file_id
+       WHERE f.path = $1 ORDER BY i.id`,
+      [file],
+    );
+    return rows;
   }
 
   /** All symbols named `name` in `file` (overloads or same-named methods can repeat). */

@@ -56,12 +56,27 @@ export async function connectStore(config: WalkConfig, io: IO): Promise<Store | 
 
 /** The exact command to start Postgres, pointing at codewalk's own docker-compose.yml. */
 export function dockerUpCommand(): string {
+  const root = codewalkRoot();
+  return root ? `docker compose -f ${join(root, 'docker-compose.yml')} up -d` : 'docker compose up -d   # run from the codewalk checkout';
+}
+
+/**
+ * Loads codewalk's own .env (e.g. ANTHROPIC_API_KEY) if there is one. Never the analysed repo's
+ * .env, whose variables belong to that app. Variables already set in the environment win.
+ */
+export function loadCodewalkEnv(): void {
+  const root = codewalkRoot();
+  const envFile = root && join(root, '.env');
+  if (envFile && existsSync(envFile)) process.loadEnvFile(envFile);
+}
+
+/** The codewalk checkout: the nearest ancestor of this module with docker-compose.yml. */
+function codewalkRoot(): string | null {
   let dir = dirname(fileURLToPath(import.meta.url));
   while (true) {
-    const compose = join(dir, 'docker-compose.yml');
-    if (existsSync(compose)) return `docker compose -f ${compose} up -d`;
+    if (existsSync(join(dir, 'docker-compose.yml'))) return dir;
     const parent = resolve(dir, '..');
-    if (parent === dir) return 'docker compose up -d   # run from the codewalk checkout';
+    if (parent === dir) return null;
     dir = parent;
   }
 }
