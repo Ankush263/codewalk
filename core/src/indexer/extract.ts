@@ -1,12 +1,20 @@
 import { dirname, relative } from 'node:path';
 import { Node, type Project, type SourceFile } from 'ts-morph';
-import type { CallFact, ImportFact, RouterCallFact, SideEffectFact, SymbolFact, SymbolKey } from '../store/types.js';
+import type { ApiClientWrapper } from '../config.js';
+import type { ApiCallFact, CallFact, ImportFact, ReactFact, RouterCallFact, SideEffectFact, SymbolFact, SymbolKey } from '../store/types.js';
+import { collectApiCalls } from './apiCalls.js';
 import { collectCalls, type RepoLookup } from './calls.js';
 import { toPosix } from './discover.js';
 import { PackageVersions, packageNameOf } from './packages.js';
+import { collectReactFacts } from './react.js';
 import { collectRouterCalls, isExpressValue } from './routers.js';
 import { collectSideEffects } from './sideEffects.js';
 import { collectSymbols, type FileSymbols } from './symbols.js';
+
+export interface ExtractOptions {
+  /** CLAUDE.md §10: custom API clients recognised as API calls. */
+  apiClientWrappers?: ApiClientWrapper[];
+}
 
 export interface ExtractedFacts {
   symbols: SymbolFact[];
@@ -14,6 +22,8 @@ export interface ExtractedFacts {
   imports: ImportFact[];
   routerCalls: RouterCallFact[];
   sideEffects: SideEffectFact[];
+  reactFacts: ReactFact[];
+  apiCalls: ApiCallFact[];
 }
 
 /** Extracts facts for repo files from one ts-morph project, caching per-file symbol registries. */
@@ -28,6 +38,7 @@ export class Extractor {
     private readonly repoRoot: string,
     /** Repo-relative paths of every indexed file (not just the ones being extracted). */
     private readonly repoPaths: Set<string>,
+    private readonly options: ExtractOptions = {},
   ) {
     this.versions = new PackageVersions(repoRoot);
     this.repo = {
@@ -46,6 +57,8 @@ export class Extractor {
       imports: this.imports(sourceFile),
       routerCalls: collectRouterCalls(sourceFile, this.repo),
       sideEffects: collectSideEffects(sourceFile, registry.byNode, this.repo),
+      reactFacts: collectReactFacts(sourceFile, registry, this.repo),
+      apiCalls: collectApiCalls(sourceFile, registry.byNode, this.repo, this.options.apiClientWrappers ?? []),
     };
   }
 

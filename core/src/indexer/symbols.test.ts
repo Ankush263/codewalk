@@ -63,3 +63,44 @@ describe('inline route handler edge cases', () => {
     expect(facts('db.ts').calls.find((c) => c.calleeText === 'helper')?.caller.name).toBe('load');
   });
 });
+
+describe('functions a hook returns', () => {
+  const files = {
+    'hooks/useCounter.ts': `import { useState } from 'react';
+export function useCounter() {
+  const [n, setN] = useState(0);
+  return {
+    n,
+    increment: () => setN(n + 1),
+    reset() { setN(0); },
+  };
+}
+export const useToggle = () => ({ toggle: () => {} });
+`,
+    'components/Counter.tsx': `import { useCounter } from '../hooks/useCounter';
+export function Counter() {
+  const { increment } = useCounter();
+  return <button onClick={() => increment()}>+</button>;
+}
+`,
+  };
+
+  it('become <hook>.<name> symbols, for `return { ... }` and for an arrow returning an object', () => {
+    const { facts } = snippetProject(files);
+    expect(facts('hooks/useCounter.ts').symbols.map((s) => `${s.kind} ${s.name}:${s.startLine}`)).toEqual(
+      expect.arrayContaining(['hook useCounter:2', 'method useCounter.increment:6', 'method useCounter.reset:7', 'hook useToggle:10', 'method useToggle.toggle:10']),
+    );
+  });
+
+  it('resolve when a caller destructures them from the hook', () => {
+    const { facts } = snippetProject(files);
+    expect(facts('components/Counter.tsx').calls).toContainEqual(
+      expect.objectContaining({ calleeText: 'increment', callee: { file: 'hooks/useCounter.ts', name: 'useCounter.increment', startLine: 6 }, resolved: true }),
+    );
+  });
+
+  it('leaves shorthand properties alone (the declared function is already a symbol)', () => {
+    const { facts } = snippetProject({ 'h.ts': 'export function useX() {\n  function go() {}\n  return { go };\n}\n' });
+    expect(facts('h.ts').symbols.map((s) => s.name)).toEqual(['useX', 'useX.go']);
+  });
+});

@@ -1,4 +1,4 @@
-import { endpointDiagram, type EndpointContext, type EndpointNode, type FileContext, type ScopeKind, type WalkthroughStatus, type CodeBlock, type FnContext, type FnWalkthrough, type WalkthroughStep } from '@codewalk/core';
+import { describeTrigger, endpointDiagram, type ComponentContext, type EndpointContext, type EndpointNode, type FileContext, type ScopeKind, type WalkthroughStatus, type CodeBlock, type FnContext, type FnWalkthrough, type WalkthroughStep } from '@codewalk/core';
 
 // Plain-text renderings: the `--no-llm` facts and the non-interactive walkthrough (piped output).
 
@@ -52,6 +52,50 @@ export function formatEndpointFacts(ctx: EndpointContext): string {
   section(out, 'Omitted (context budget)', ctx.omitted);
   section(out, 'Warnings', ctx.warnings);
   section(out, 'Sequence diagram (Mermaid)', endpointDiagram(ctx).split('\n'));
+  return out.join('\n');
+}
+
+export function formatComponentFacts(ctx: ComponentContext): string {
+  const c = ctx.component;
+  const f = c.facts;
+  const out = [`component ${c.symbol.name} — ${c.symbol.file}:${c.symbol.startLine}-${c.symbol.endLine}`];
+  if (c.symbol.signature) out.push(`  ${c.symbol.signature}`);
+  section(out, 'Props', f.props.length || f.propsType ? [`${f.props.join(', ') || '(not destructured)'}${f.propsType ? `  : ${f.propsType}` : ''}`] : []);
+  section(out, 'State', f.state.map((s) => `${s.name}${s.setter ? ` / ${s.setter}` : ''}  ${s.hook}(${s.initial ?? ''})  line ${s.line}`));
+  section(out, 'Context', f.context.map((x) => `${x.context}  line ${x.line}`));
+  section(out, 'Hooks called', f.hooks.map((h) => `${h.name}  line ${h.line}  ${h.callee ? '(custom)' : h.package ? `(${h.package})` : ''}`.trimEnd()));
+  section(out, 'Custom hooks (expanded)', ctx.hooks.map((h) => `${'  '.repeat(h.depth - 1)}${h.symbol.name}  ${h.symbol.file}:${h.symbol.startLine}  (used by ${h.usedBy} at ${h.calledAt})`));
+  section(
+    out,
+    'Render tree',
+    f.render.map((r) => `${'  '.repeat(r.depth)}<${r.element}>  line ${r.line}${r.condition ? `  when ${r.condition}` : ''}${r.props.length ? `  ${r.props.map((p) => `${p.name}=${p.value}`).join(' ')}` : ''}`),
+  );
+  section(out, 'Event handlers', f.handlers.map((h) => `${h.event} on <${h.element}> → ${h.handler}  line ${h.line}`));
+  section(
+    out,
+    'Effects and derived values',
+    [c, ...ctx.hooks].flatMap((u) => u.facts.effects.map((e) => `${e.hook} ${e.deps ? `[${e.deps.join(', ')}]` : '(every render)'}  ${u.symbol.name} ${u.symbol.file}:${e.line}`)),
+  );
+  section(
+    out,
+    'API calls',
+    ctx.apiCalls.flatMap((a) => [
+      `${a.method} ${a.urlPattern}  ${a.symbol.name} ${a.symbol.file}:${a.line}`,
+      ...(a.triggers.length ? a.triggers.map((t) => `  ← ${describeTrigger(t)}`) : ['  ← no trigger found in this component']),
+    ]),
+  );
+  section(
+    out,
+    'Calls',
+    ctx.callees.map((k) => {
+      const target = k.callee ? `${k.callee.name}  ${k.callee.file}:${k.callee.startLine}` : `${k.calleeText}  ${k.resolved ? '(package / built-in)' : '(unresolved)'}`;
+      return `${'  '.repeat(k.depth - 1)}${k.caller.name} → ${target}`;
+    }),
+  );
+  section(out, 'Unresolved', ctx.unresolved.map((u) => u.note));
+  section(out, 'Not expanded', ctx.limits);
+  section(out, 'Omitted (context budget)', ctx.omitted);
+  section(out, 'Warnings', ctx.warnings);
   return out.join('\n');
 }
 
@@ -139,27 +183,27 @@ export interface ListRow {
 }
 
 export function formatList(rows: ListRow[]): string {
-  if (rows.length === 0) return 'No saved walkthroughs yet. Run `walk fn`, `walk file` or `walk endpoint` to create one.';
+  if (rows.length === 0) return 'No saved walkthroughs yet. Run `walk fn`, `walk file`, `walk endpoint` or `walk component` to create one.';
   const width = Math.max(...rows.map((r) => r.scopeRef.length));
   const kindWidth = Math.max(...rows.map((r) => r.scopeKind.length));
   return rows
     .map((r) => {
       const s = r.status;
-      const detail = s.fresh ? `${s.totalSteps} steps` : staleDetail(s);
+      const detail = s.fresh ? `${s.totalSteps} steps` : staleDetail(r.scopeKind, s);
       const saved = new Date(r.savedAt).toISOString().slice(0, 16).replace('T', ' ');
       return `${s.fresh ? 'fresh' : 'stale'}  ${r.scopeKind.padEnd(kindWidth)}  ${r.scopeRef.padEnd(width)}  ${detail} · saved ${saved}`;
     })
     .join('\n');
 }
 
-function staleDetail(s: WalkthroughStatus): string {
+function staleDetail(kind: ScopeKind, s: WalkthroughStatus): string {
   const label = (x: WalkthroughStatus['sections'][number]) => x.symbol ?? `${x.file} lines`;
   const changed = s.sections.filter((x) => x.state === 'changed').flatMap((x) => (x.changedBlocks?.length ? x.changedBlocks : [label(x)]));
   const removed = s.sections.filter((x) => x.state === 'missing').map(label);
   const parts = [`${s.staleSteps}/${s.totalSteps} steps stale`];
   if (s.fileRemoved) parts.push('file removed');
-  if (s.routeRemoved) parts.push('route removed');
-  if (s.chainChanged) parts.push('middleware chain changed');
+  if (s.routeRemoved) parts.push(kind === 'component' ? 'component removed' : 'route removed');
+  if (s.chainChanged) parts.push(kind === 'component' ? 'structure changed' : 'middleware chain changed');
   if (changed.length) parts.push(`changed: ${changed.join(', ')}`);
   if (removed.length) parts.push(`removed: ${removed.join(', ')}`);
   if (s.uncovered.length) parts.push(`not covered: ${s.uncovered.join(', ')}`);

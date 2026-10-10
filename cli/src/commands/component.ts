@@ -1,12 +1,12 @@
 import {
   AnthropicProvider,
-  buildEndpointContext,
-  endpointBlocks,
-  endpointOverviewOf,
-  generateEndpointSection,
+  buildComponentContext,
+  componentBlocks,
+  componentOverviewOf,
+  generateComponentSection,
   indexRepo,
   loadSavedWalkthrough,
-  parseEndpointTarget,
+  parseComponentTarget,
   persistWalkthrough,
   reuseMultiBlockSection,
   SAVED_VERSION,
@@ -14,11 +14,11 @@ import {
   type LlmProvider,
   type SavedWalkthrough,
 } from '@codewalk/core';
-import { formatEndpointFacts } from '../ui/format.js';
+import { formatComponentFacts } from '../ui/format.js';
 import { printWalkthrough, type OutFormat } from '../ui/output.js';
 import { connectStore, loadRepo, reportError, type IO } from './shared.js';
 
-export interface EndpointOptions {
+export interface ComponentOptions {
   /** False with --no-llm: print only the static facts. */
   llm: boolean;
   depth: number;
@@ -27,18 +27,18 @@ export interface EndpointOptions {
   refresh: boolean;
 }
 
-export interface EndpointDeps {
+export interface ComponentDeps {
   /** Overrides the configured Anthropic provider (tests use recorded responses). */
   provider?: LlmProvider;
   /** Use the Ink stepper; defaults to true when stdin and stdout are terminals. */
   interactive?: boolean;
 }
 
-/** `walk endpoint "<METHOD> <path>"`. Returns an exit code. */
-export async function runEndpoint(cwd: string, targetArg: string, options: EndpointOptions, io: IO, deps: EndpointDeps = {}): Promise<number> {
+/** `walk component <file>[#<Component>]`. Returns an exit code. */
+export async function runComponent(cwd: string, targetArg: string, options: ComponentOptions, io: IO, deps: ComponentDeps = {}): Promise<number> {
   let target;
   try {
-    target = parseEndpointTarget(targetArg);
+    target = parseComponentTarget(targetArg);
   } catch (err) {
     return reportError(err, io);
   }
@@ -50,33 +50,33 @@ export async function runEndpoint(cwd: string, targetArg: string, options: Endpo
 
   let saved: SavedWalkthrough;
   try {
-    // Facts first: bring the index (and the stitched routes) up to date.
+    // Facts first: bring the index (React facts and API calls included) up to date.
     await store.migrate();
     await indexRepo(repo.repoRoot, repo.config, store);
 
-    const ctx = await buildEndpointContext(store, repo.repoRoot, target, {
+    const ctx = await buildComponentContext(store, repo.repoRoot, target, {
       depth: options.depth,
       maxContextTokens: repo.config.llm.maxContextTokens,
     });
     for (const warning of ctx.warnings) io.error(`! ${warning}`);
 
     if (!options.llm) {
-      io.log(options.out === 'json' ? JSON.stringify(ctx, null, 2) : formatEndpointFacts(ctx));
+      io.log(options.out === 'json' ? JSON.stringify(ctx, null, 2) : formatComponentFacts(ctx));
       return 0;
     }
 
-    // Cached by the content of every explained block and the chain (CLAUDE.md §9).
-    const previous = options.refresh ? null : await loadSavedWalkthrough(store, 'endpoint', ctx.scopeRef);
-    const current = { blocks: endpointBlocks(ctx), chainHash: ctx.chainHash };
+    // Cached by the content of every explained block and the component's structure (CLAUDE.md §9).
+    const previous = options.refresh ? null : await loadSavedWalkthrough(store, 'component', ctx.scopeRef);
+    const current = { blocks: componentBlocks(ctx), chainHash: ctx.structureHash };
     let section = previous && reuseMultiBlockSection(previous.sections[0], current, sourceFiles(repo.repoRoot), options.depth);
     if (section) {
       io.error(`Code unchanged since ${section.generatedAt}: showing the saved walkthrough (--refresh to regenerate).`);
     } else {
       io.error(`Explaining ${ctx.scopeRef} with ${repo.config.llm.model}…`);
       const provider = deps.provider ?? new AnthropicProvider(repo.config.llm.model);
-      section = await generateEndpointSection(provider, ctx, repo.repoRoot, { model: repo.config.llm.model, depth: options.depth });
+      section = await generateComponentSection(provider, ctx, repo.repoRoot, { model: repo.config.llm.model, depth: options.depth });
     }
-    saved = { version: SAVED_VERSION, scopeKind: 'endpoint', scopeRef: ctx.scopeRef, overview: null, endpoint: endpointOverviewOf(ctx), sections: [section] };
+    saved = { version: SAVED_VERSION, scopeKind: 'component', scopeRef: ctx.scopeRef, overview: null, component: componentOverviewOf(ctx), sections: [section] };
     const paths = await persistWalkthrough(store, repo.repoRoot, saved);
     io.error(`Saved ${paths.markdown}`);
   } catch (err) {

@@ -217,3 +217,42 @@ describe('indexRepo with middleware imported through a barrel file', () => {
     expect(requireAuth.symbol).toMatchObject({ file: 'api/middleware/auth.ts', startLine: 12 });
   });
 });
+
+describe('indexRepo: React facts, API calls and extraction settings', () => {
+  let store: Store;
+  const config = loadConfig(FIXTURE);
+  const id = async (file: string, name: string) => (await store.findSymbol(file, name))[0].id;
+
+  beforeAll(async () => {
+    store = await openStore({ url: DATABASE_URL, schema: `cw_test_idx4_${Math.random().toString(16).slice(2, 10)}` });
+    await store.migrate();
+    await indexRepo(FIXTURE, config, store);
+  });
+
+  afterAll(async () => {
+    await store?.dropSchema();
+    await store?.close();
+  });
+
+  it('stores React facts for components and hooks', async () => {
+    const [form] = await store.getReactFacts([await id('web/components/EnrollForm.tsx', 'EnrollForm')]);
+    expect(form.hooks.map((h) => h.name)).toEqual(['useState', 'useEnrollMutation']);
+    expect(form.handlers[0]).toMatchObject({ event: 'onSubmit', target: { name: 'EnrollForm.handleSubmit' } });
+    const [hook] = await store.getReactFacts([await id('web/hooks/usePatient.ts', 'usePatient')]);
+    expect(hook.effects).toEqual([{ hook: 'useEffect', line: 9, endLine: 23, deps: ['id'], binding: null }]);
+  });
+
+  it('stores API calls found through the configured wrappers', async () => {
+    const calls = await store.getApiCalls([await id('web/hooks/useEnrollMutation.ts', 'useEnrollMutation.mutate'), await id('web/hooks/usePatient.ts', 'usePatient')]);
+    expect(calls.map((c) => `${c.method} ${c.urlPattern} :${c.line}`).sort()).toEqual(['GET /api/patients/:id :13', 'POST /api/patients/enroll :19']);
+  });
+
+  it('re-extracts unchanged files when apiClientWrappers changes, and only once', async () => {
+    const noWrappers = { ...config, apiClientWrappers: [] };
+    const result = await indexRepo(FIXTURE, noWrappers, store);
+    expect(result.changed).toHaveLength(result.scanned);
+    expect(await store.getApiCalls([await id('web/hooks/useEnrollMutation.ts', 'useEnrollMutation.mutate')])).toEqual([]);
+    expect((await indexRepo(FIXTURE, noWrappers, store)).changed).toEqual([]);
+    expect((await indexRepo(FIXTURE, config, store)).changed).toHaveLength(result.scanned);
+  });
+});

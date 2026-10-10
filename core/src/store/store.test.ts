@@ -359,3 +359,99 @@ describe('store: routes and side effects', () => {
     expect(await store.getRouteWarnings()).toEqual(['api/routes.ts: router `r` has routes but is never mounted on an app']);
   });
 });
+
+describe('store: React facts, API calls and index settings', () => {
+  let store: Store;
+  const form: FileFacts = {
+    path: 'web/Form.tsx',
+    hash: 'h-form-1',
+    language: 'typescript',
+    symbols: [
+      { name: 'Form', kind: 'component', startLine: 3, endLine: 12, exported: true, signature: null },
+      { name: 'Form.submit', kind: 'function', startLine: 5, endLine: 7, exported: false, signature: null },
+    ],
+    calls: [],
+    imports: [],
+    reactFacts: [
+      {
+        symbol: { name: 'Form', startLine: 3 },
+        propsType: 'Props',
+        props: ['onDone'],
+        state: [{ name: 'v', setter: 'setV', hook: 'useState', initial: "''", line: 4 }],
+        hooks: [{ name: 'useSave', line: 8, callee: { file: 'web/useSave.ts', name: 'useSave', startLine: 1 }, package: null, bindings: ['save'], callbacks: [] }],
+        context: [],
+        effects: [{ hook: 'useEffect', line: 9, endLine: 9, deps: null, binding: null }],
+        render: [{ element: 'form', kind: 'element', line: 10, depth: 0, component: null, package: null, props: [{ name: 'onSubmit', value: 'submit' }], condition: null }],
+        handlers: [{ element: 'form', event: 'onSubmit', handler: 'submit', line: 10, endLine: 10, target: { file: 'web/Form.tsx', name: 'Form.submit', startLine: 5 } }],
+      },
+    ],
+    apiCalls: [],
+  };
+  const useSave: FileFacts = {
+    path: 'web/useSave.ts',
+    hash: 'h-save-1',
+    language: 'typescript',
+    symbols: [{ name: 'useSave', kind: 'hook', startLine: 1, endLine: 6, exported: true, signature: null }],
+    calls: [],
+    imports: [],
+    reactFacts: [{ symbol: { name: 'useSave', startLine: 1 }, propsType: null, props: [], state: [], hooks: [], context: [], effects: [], render: [], handlers: [] }],
+    apiCalls: [{ symbol: { name: 'useSave', startLine: 1 }, method: 'POST', urlPattern: '/api/save', urlText: "'/api/save'", line: 3 }],
+  };
+  const idOf = async (file: string, name: string) => (await store.findSymbol(file, name))[0].id;
+
+  beforeAll(async () => {
+    store = await openStore({ url: DATABASE_URL, schema: `cw_test_react_${randomBytes(4).toString('hex')}` });
+    await store.migrate();
+    await store.applyIndexChanges({ files: [form, useSave] });
+  });
+
+  afterAll(async () => {
+    await store?.dropSchema();
+    await store?.close();
+  });
+
+  it('round-trips React facts', async () => {
+    const formId = await idOf('web/Form.tsx', 'Form');
+    const { symbol: _, ...rest } = form.reactFacts![0];
+    expect(await store.getReactFacts([formId])).toEqual([{ symbolId: formId, ...rest }]);
+  });
+
+  it('round-trips API calls', async () => {
+    const hookId = await idOf('web/useSave.ts', 'useSave');
+    expect(await store.getApiCalls([hookId])).toEqual([
+      { id: expect.any(Number), symbolId: hookId, method: 'POST', urlPattern: '/api/save', urlText: "'/api/save'", line: 3 },
+    ]);
+  });
+
+  it('finds symbols by key in one query, leaving out keys that match nothing', async () => {
+    const found = await store.getSymbolsByKeys([
+      { file: 'web/useSave.ts', name: 'useSave', startLine: 1 },
+      { file: 'web/Form.tsx', name: 'Form.submit', startLine: 5 },
+      { file: 'web/Form.tsx', name: 'Nope', startLine: 1 },
+    ]);
+    expect(found.map((s) => `${s.file}#${s.name}`)).toEqual(['web/Form.tsx#Form.submit', 'web/useSave.ts#useSave']);
+  });
+
+  it('a call refresh replaces React facts and API calls, keeping symbol ids', async () => {
+    const hookId = await idOf('web/useSave.ts', 'useSave');
+    await store.applyIndexChanges({
+      callRefreshes: [
+        {
+          path: 'web/useSave.ts',
+          calls: [],
+          reactFacts: useSave.reactFacts,
+          apiCalls: [{ symbol: { name: 'useSave', startLine: 1 }, method: 'PUT', urlPattern: '/api/save/:id', urlText: '`/api/save/${id}`', line: 4 }],
+        },
+      ],
+    });
+    expect((await store.getApiCalls([hookId])).map((c) => `${c.method} ${c.urlPattern}`)).toEqual(['PUT /api/save/:id']);
+    expect(await store.getReactFacts([hookId])).toHaveLength(1);
+  });
+
+  it('stores index settings; resetting one clears every file hash', async () => {
+    expect(await store.getIndexSetting('extraction')).toBeNull();
+    await store.resetIndexForSetting('extraction', 'v1');
+    expect(await store.getIndexSetting('extraction')).toBe('v1');
+    expect(new Set((await store.getFileHashes()).values())).toEqual(new Set(['']));
+  });
+});

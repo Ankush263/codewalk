@@ -12,7 +12,7 @@ import type { FnWalkthrough } from './fn.js';
 /** Bumped when the saved shape changes; older saves are treated as never generated. */
 export const SAVED_VERSION = 2;
 
-export type ScopeKind = 'fn' | 'file' | 'endpoint';
+export type ScopeKind = 'fn' | 'file' | 'endpoint' | 'component';
 
 /** The code a section explains: a named symbol (found again by name when lines move) or a fixed range. */
 export interface BlockRef {
@@ -39,9 +39,9 @@ export interface Section {
   /** The --depth of callees its context was built with; a different depth regenerates it. */
   depth: number;
   walkthrough: FnWalkthrough;
-  /** Endpoint sections: every code block sent to the LLM, `block` (the handler) first. */
+  /** Endpoint and component sections: every code block sent to the LLM, `block` first. */
   blocks?: BlockRef[];
-  /** Endpoint sections: chainHashOf the route when generated. */
+  /** Endpoint sections: chainHashOf the route; component sections: structureHashOf the component. */
   chainHash?: string;
 }
 
@@ -79,14 +79,35 @@ export interface EndpointOverview {
   diagram: string;
 }
 
+/** A component's React facts (CLAUDE.md §6.4), from the index alone; rebuilt on every run. */
+export interface ComponentOverview {
+  file: string;
+  name: string;
+  propsType: string | null;
+  props: string[];
+  state: { name: string; setter: string | null; hook: string; initial: string | null; at: string }[];
+  context: { context: string; at: string }[];
+  /** Hooks the component calls directly. */
+  hooks: { name: string; package: string | null; expanded: boolean; at: string }[];
+  children: { element: string; condition: string | null; props: string[]; at: string }[];
+  handlers: { event: string; element: string; handler: string; at: string }[];
+  /** Effects of the component and of every expanded hook. */
+  effects: { hook: string; deps: string[] | null; owner: string; at: string }[];
+  apiCalls: { method: string; urlPattern: string; at: string; triggers: string[] }[];
+  limits: string[];
+  warnings: string[];
+}
+
 export interface SavedWalkthrough {
   version: typeof SAVED_VERSION;
   scopeKind: ScopeKind;
-  /** "file#symbol" or "file:start-end" for fn, "file" for file, "METHOD /path" for endpoint. */
+  /** "file#symbol" or "file:start-end" for fn, "file" for file, "METHOD /path" for endpoint, "file#Component" for component. */
   scopeRef: string;
   overview: FileOverview | null;
   /** Endpoint walkthroughs only. */
   endpoint?: EndpointOverview;
+  /** Component walkthroughs only. */
+  component?: ComponentOverview;
   sections: Section[];
 }
 
@@ -193,6 +214,24 @@ export function endpointNotes(o: EndpointOverview): string[] {
     `Error handlers: ${o.errorHandlers.map((n) => `${n.label} (${n.at})`).join(', ') || 'none (Express default)'}`,
     ...o.sideEffects.map((e) => `Side effect: ${e.kind} ${e.detail} in ${e.symbol} (${e.at})`),
     ...o.errorPaths.map((p) => `Can fail: ${p.error}${p.status !== null ? ` → ${p.status}` : ''} in ${p.symbol} (${p.at})`),
+    ...o.warnings.map((w) => `Warning: ${w}`),
+  ];
+}
+
+/** The component overview as plain lines, shared by the terminal, the stepper and Markdown. */
+export function componentNotes(o: ComponentOverview): string[] {
+  const hook = (h: ComponentOverview['hooks'][number]) => `${h.name} (${h.expanded ? 'expanded' : (h.package ?? 'not expanded')})`;
+  return [
+    `Component: ${o.name} (${o.file})`,
+    `Props: ${o.props.join(', ') || 'none'}${o.propsType ? ` — ${o.propsType}` : ''}`,
+    ...o.state.map((s) => `State: ${s.name}${s.setter ? ` / ${s.setter}` : ''} (${s.hook}${s.initial !== null ? `, initially ${s.initial}` : ''}) at ${s.at}`),
+    ...o.context.map((x) => `Context: ${x.context} at ${x.at}`),
+    `Hooks: ${o.hooks.map(hook).join(', ') || 'none'}`,
+    ...o.children.map((c) => `Renders: <${c.element}>${c.condition ? ` when ${c.condition}` : ''}${c.props.length ? ` with ${c.props.join(', ')}` : ''} at ${c.at}`),
+    ...o.handlers.map((h) => `Handler: ${h.event} on <${h.element}> → ${h.handler} at ${h.at}`),
+    ...o.effects.map((e) => `Effect: ${e.hook} ${e.deps ? `[${e.deps.join(', ')}]` : '(every render)'} in ${e.owner} at ${e.at}`),
+    ...o.apiCalls.map((a) => `API call: ${a.method} ${a.urlPattern} at ${a.at}${a.triggers.length ? ` ← ${a.triggers.join('; ')}` : ' (no trigger found in this component)'}`),
+    ...o.limits.map((l) => `Not expanded: ${l}`),
     ...o.warnings.map((w) => `Warning: ${w}`),
   ];
 }

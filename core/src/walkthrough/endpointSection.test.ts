@@ -8,7 +8,7 @@ import { indexRepo } from '../indexer/index.js';
 import type { LlmProvider } from '../llm/generate.js';
 import { renderMarkdown } from '../render/markdown.js';
 import { openStore, type Store } from '../store/index.js';
-import { endpointBlocks, endpointOverviewOf, generateEndpointSection, reuseEndpointSection } from './endpoint.js';
+import { endpointBlocks, endpointOverviewOf, generateEndpointSection, reuseMultiBlockSection } from './endpoint.js';
 import { SAVED_VERSION, sourceFiles, type SavedWalkthrough, type Section } from './saved.js';
 import { checkWalkthrough, filesOf, loadCurrentSource } from './staleness.js';
 
@@ -72,14 +72,14 @@ describe('endpoint sections', () => {
     const ctx = await context();
     const source = await loadCurrentSource(store, repo, filesOf(saved));
     expect(checkWalkthrough(saved, source, () => ctx.chainHash).fresh).toBe(true);
-    const reused = reuseEndpointSection(section, { blocks: endpointBlocks(ctx), chainHash: ctx.chainHash }, sourceFiles(repo), 3);
+    const reused = reuseMultiBlockSection(section, { blocks: endpointBlocks(ctx), chainHash: ctx.chainHash }, sourceFiles(repo), 3);
     expect(reused?.walkthrough.stages).toEqual(section.walkthrough.stages);
   });
 
   it('reuses with shifted lines when only line positions change (no LLM call)', async () => {
     edit('api/services/enrollService.ts', 'import { pool }', '// one\n// two\nimport { pool }');
     const ctx = await context();
-    const reused = reuseEndpointSection(section, { blocks: endpointBlocks(ctx), chainHash: ctx.chainHash }, sourceFiles(repo), 3);
+    const reused = reuseMultiBlockSection(section, { blocks: endpointBlocks(ctx), chainHash: ctx.chainHash }, sourceFiles(repo), 3);
     expect(reused).not.toBeNull();
     const s6 = reused!.walkthrough.stages.flatMap((s) => s.steps).find((s) => s.id === 's6')!;
     expect(s6.code_ref).toEqual({ file: 'api/services/enrollService.ts', start: 38, end: 47 });
@@ -90,7 +90,7 @@ describe('endpoint sections', () => {
   it('follows registration lines that move when a router or app file gains lines above them', async () => {
     edit('api/app.ts', "import express from 'express';", "// app entry\nimport express from 'express';");
     const ctx = await context();
-    const reused = reuseEndpointSection(section, { blocks: endpointBlocks(ctx), chainHash: ctx.chainHash }, sourceFiles(repo), 3);
+    const reused = reuseMultiBlockSection(section, { blocks: endpointBlocks(ctx), chainHash: ctx.chainHash }, sourceFiles(repo), 3);
     expect(reused).not.toBeNull();
     const s1 = reused!.walkthrough.stages.flatMap((s) => s.steps).find((s) => s.id === 's1')!;
     expect(s1.code_ref).toEqual({ file: 'api/app.ts', start: 10, end: 11 });
@@ -101,7 +101,7 @@ describe('endpoint sections', () => {
   it('goes stale, naming the changed block, when a callee body changes', async () => {
     edit('api/repositories/patientRepository.ts', 'VALUES ($1, $2, now())', 'VALUES ($1, $2, NOW())');
     const ctx = await context();
-    expect(reuseEndpointSection(section, { blocks: endpointBlocks(ctx), chainHash: ctx.chainHash }, sourceFiles(repo), 3)).toBeNull();
+    expect(reuseMultiBlockSection(section, { blocks: endpointBlocks(ctx), chainHash: ctx.chainHash }, sourceFiles(repo), 3)).toBeNull();
     const source = await loadCurrentSource(store, repo, filesOf(saved));
     const status = checkWalkthrough(saved, source, () => ctx.chainHash);
     expect(status.fresh).toBe(false);

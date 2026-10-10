@@ -298,7 +298,7 @@ function toCallee(row: CalleeRecord, depth: number, caller: Pick<SymbolRecord, '
 }
 
 /** The indexed type (or class) symbol enclosing each referenced declaration. */
-async function resolveTypes(store: Store, refs: DeclarationRef[]): Promise<SymbolRecord[]> {
+export async function resolveTypes(store: Store, refs: DeclarationRef[]): Promise<SymbolRecord[]> {
   const byFile = new Map<string, SymbolRecord[]>();
   const found = new Map<number, SymbolRecord>();
 

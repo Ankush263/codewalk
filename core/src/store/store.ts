@@ -3,6 +3,7 @@ import pg from 'pg';
 import { runner } from 'node-pg-migrate';
 import { handlerKey, handlerLabel, handlerNote, stitchRoutes } from '../routes/stitch.js';
 import type {
+  ApiCallRecord,
   CallEdge,
   CalleeRecord,
   CallerRecord,
@@ -12,9 +13,11 @@ import type {
   IndexChanges,
   IndexStats,
   MiddlewareRecord,
+  ReactFactRecord,
   RouteRecord,
   RouterCallRecord,
   SideEffectRecord,
+  SymbolKey,
   SymbolKind,
   SymbolRecord,
   WalkthroughRecord,
@@ -200,6 +203,13 @@ export class Store {
            SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ANY($1::text[]))`,
         [refreshPaths],
       );
+      for (const table of ['components', 'api_calls']) {
+        await client.query(
+          `DELETE FROM ${table} WHERE symbol_id IN (
+             SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ANY($1::text[]))`,
+          [refreshPaths],
+        );
+      }
       await client.query('DELETE FROM files WHERE path = ANY($1::text[])', [
         [...files.map((f) => f.path), ...removedPaths],
       ]);
@@ -280,6 +290,29 @@ export class Store {
         [JSON.stringify(sideEffects)],
       );
       assertCount('side_effects', insertedEffects.rowCount, sideEffects.length);
+
+      const reactFacts = factSources.flatMap((f) => (f.reactFacts ?? []).map((r) => ({ ...r, file: f.path })));
+      const insertedReact = await client.query(
+        `INSERT INTO components (symbol_id, props_type, props, state_vars, hooks_used, context_used, effects, render, handlers)
+         SELECT s.id, x."propsType", x.props, x.state, x.hooks, x.context, x.effects, x.render, x.handlers
+         FROM jsonb_to_recordset($1::jsonb) AS x(file text, symbol jsonb, "propsType" text, props jsonb, state jsonb, hooks jsonb,
+                                                 context jsonb, effects jsonb, render jsonb, handlers jsonb)
+         JOIN files f ON f.path = x.file
+         JOIN symbols s ON s.file_id = f.id AND s.name = x.symbol->>'name' AND s.start_line = (x.symbol->>'startLine')::int`,
+        [JSON.stringify(reactFacts)],
+      );
+      assertCount('components', insertedReact.rowCount, reactFacts.length);
+
+      const apiCalls = factSources.flatMap((f) => (f.apiCalls ?? []).map((a) => ({ ...a, file: f.path })));
+      const insertedApi = await client.query(
+        `INSERT INTO api_calls (symbol_id, method, url_pattern, url_text, line)
+         SELECT s.id, x.method, x."urlPattern", x."urlText", x.line
+         FROM jsonb_to_recordset($1::jsonb) AS x(file text, symbol jsonb, method text, "urlPattern" text, "urlText" text, line int)
+         JOIN files f ON f.path = x.file
+         JOIN symbols s ON s.file_id = f.id AND s.name = x.symbol->>'name' AND s.start_line = (x.symbol->>'startLine')::int`,
+        [JSON.stringify(apiCalls)],
+      );
+      assertCount('api_calls', insertedApi.rowCount, apiCalls.length);
 
       await this.rebuildRoutes(client);
 
@@ -515,6 +548,66 @@ export class Store {
     return rows.map((r) => r.message);
   }
 
+  /** React facts of the given components/hooks, one query. */
+  async getReactFacts(symbolIds: number[]): Promise<ReactFactRecord[]> {
+    const { rows } = await this.pool.query<ReactFactRow>(
+      `SELECT symbol_id, props_type, props, state_vars, hooks_used, context_used, effects, render, handlers
+       FROM components WHERE symbol_id = ANY($1::bigint[]) ORDER BY symbol_id`,
+      [symbolIds],
+    );
+    return rows.map((r) => ({
+      symbolId: Number(r.symbol_id), propsType: r.props_type, props: r.props, state: r.state_vars, hooks: r.hooks_used,
+      context: r.context_used, effects: r.effects, render: r.render, handlers: r.handlers,
+    }));
+  }
+
+  /** API calls made by the given symbols, by symbol then line. One query. */
+  async getApiCalls(symbolIds: number[]): Promise<ApiCallRecord[]> {
+    const { rows } = await this.pool.query<{ id: string; symbol_id: string; method: string; url_pattern: string; url_text: string; line: number }>(
+      `SELECT id, symbol_id, method, url_pattern, url_text, line FROM api_calls
+       WHERE symbol_id = ANY($1::bigint[]) ORDER BY symbol_id, line, id`,
+      [symbolIds],
+    );
+    return rows.map((r) => ({ id: Number(r.id), symbolId: Number(r.symbol_id), method: r.method, urlPattern: r.url_pattern, urlText: r.url_text, line: r.line }));
+  }
+
+  /** The symbols the keys name, in one query; keys that match nothing are left out. */
+  async getSymbolsByKeys(keys: SymbolKey[]): Promise<SymbolRecord[]> {
+    const { rows } = await this.pool.query<SymbolRow>(
+      `SELECT DISTINCT s.id, f.path AS file, s.name, s.kind, s.start_line, s.end_line, s.exported, s.signature
+       FROM jsonb_to_recordset($1::jsonb) AS k(file text, name text, "startLine" int)
+       JOIN files f ON f.path = k.file
+       JOIN symbols s ON s.file_id = f.id AND s.name = k.name AND s.start_line = k."startLine"
+       ORDER BY f.path, s.start_line`,
+      [JSON.stringify(keys)],
+    );
+    return rows.map(toSymbolRecord);
+  }
+
+  async getIndexSetting(key: string): Promise<string | null> {
+    const { rows } = await this.pool.query<{ value: string }>('SELECT value FROM index_settings WHERE key = $1', [key]);
+    return rows[0]?.value ?? null;
+  }
+
+  /** Records a new extraction setting and marks every file as changed, so the next index pass re-extracts all of them. */
+  async resetIndexForSetting(key: string, value: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query("UPDATE files SET hash = ''");
+      await client.query(
+        'INSERT INTO index_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+        [key, value],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   /**
    * Inserts or replaces the saved walkthrough of one scope. Saving identical content (e.g. a cache hit)
    * is a no-op, so created_at stays the time the content last changed.
@@ -584,6 +677,18 @@ interface MiddlewareRow extends PrefixedSymbolRow {
   line: number;
   end_line: number;
   unresolved_note: string | null;
+}
+
+interface ReactFactRow {
+  symbol_id: string;
+  props_type: string | null;
+  props: ReactFactRecord['props'];
+  state_vars: ReactFactRecord['state'];
+  hooks_used: ReactFactRecord['hooks'];
+  context_used: ReactFactRecord['context'];
+  effects: ReactFactRecord['effects'];
+  render: ReactFactRecord['render'];
+  handlers: ReactFactRecord['handlers'];
 }
 
 interface RouterCallRow {

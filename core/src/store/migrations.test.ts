@@ -67,3 +67,38 @@ describe('routes-and-side-effects migration', () => {
     expect([...(await store.getFileHashes()).values()]).toEqual(['']);
   });
 });
+
+// Upgrading an index built before Phase 4: unchanged files must be re-extracted to get React facts and API calls.
+describe('react-facts-and-api-calls migration', () => {
+  const schema = `cw_test_mig4_${randomBytes(4).toString('hex')}`;
+  let store: Store;
+  let pool: pg.Pool;
+
+  beforeAll(async () => {
+    await runner({ databaseUrl: DATABASE_URL, dir: MIGRATIONS_DIR, migrationsTable: 'pgmigrations', schema, createSchema: true, direction: 'up', count: 3, log: () => {} });
+    pool = new pg.Pool({ connectionString: DATABASE_URL, options: `-c search_path=${schema},public` });
+    store = await openStore({ url: DATABASE_URL, schema });
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+    await store?.dropSchema();
+    await store?.close();
+  });
+
+  it('marks every indexed file as changed and adds the new columns and settings table', async () => {
+    await pool.query(`INSERT INTO files (path, hash, language) VALUES ('web/a.tsx', 'h1', 'typescript')`);
+    await store.migrate();
+    expect([...(await store.getFileHashes()).values()]).toEqual(['']);
+    const { rows } = await pool.query(
+      `SELECT table_name, column_name FROM information_schema.columns
+       WHERE table_schema = $1 AND ((table_name = 'components' AND column_name IN ('props', 'effects', 'render', 'handlers'))
+         OR (table_name = 'api_calls' AND column_name = 'url_text') OR table_name = 'index_settings')
+       ORDER BY 1, 2`,
+      [schema],
+    );
+    expect(rows.map((r) => `${r.table_name}.${r.column_name}`)).toEqual([
+      'api_calls.url_text', 'components.effects', 'components.handlers', 'components.props', 'components.render', 'index_settings.key', 'index_settings.value',
+    ]);
+  });
+});

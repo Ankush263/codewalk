@@ -189,7 +189,7 @@ function statusOfClass(cls: ClassDeclaration, depth: number): number | null {
 }
 
 /** Text of a string/template literal, or of a const initialised with one (followed through imports). */
-function literalText(node: Node | undefined, depth = 0): string | null {
+export function literalText(node: Node | undefined, depth = 0): string | null {
   const n = unwrap(node);
   if (!n || depth > 3) return null;
   if (Node.isStringLiteral(n) || Node.isNoSubstitutionTemplateLiteral(n)) return n.getLiteralText();
@@ -219,7 +219,7 @@ function optionMethod(node: Node | undefined): string | null {
   return literalText(propertyValue(n, 'method'))?.toUpperCase() ?? null;
 }
 
-function propertyValue(obj: Node, name: string): Node | undefined {
+export function propertyValue(obj: Node, name: string): Node | undefined {
   if (!Node.isObjectLiteralExpression(obj)) return undefined;
   const prop = obj.getProperty(name);
   return prop && Node.isPropertyAssignment(prop) ? prop.getInitializer() : undefined;
@@ -230,12 +230,12 @@ function isParameter(id: Node): boolean {
   return !!decl && Node.isParameterDeclaration(decl);
 }
 
-function declaredInRepo(id: Node, repo: RepoLookup): boolean {
+export function declaredInRepo(id: Node, repo: RepoLookup): boolean {
   const decl = declarationOf(id);
   return !!decl && repo.isRepoFile(decl.getSourceFile());
 }
 
-function oneLine(text: string): string {
+export function oneLine(text: string): string {
   const collapsed = text.replace(/\s+/g, ' ').trim();
   return collapsed.length > MAX_TEXT ? `${collapsed.slice(0, MAX_TEXT - 1)}…` : collapsed;
 }

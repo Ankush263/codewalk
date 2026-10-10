@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Project, ts } from 'ts-morph';
@@ -20,6 +21,14 @@ export interface IndexResult {
   durationMs: number;
 }
 
+/** index_settings key for the config values that change what extraction produces. */
+export const EXTRACTION_SETTINGS = 'extraction';
+
+/** Changes when a config value that affects extraction changes (CLAUDE.md §10: apiClientWrappers). */
+export function extractionSettingsHash(config: WalkConfig): string {
+  return createHash('sha256').update(JSON.stringify({ apiClientWrappers: config.apiClientWrappers })).digest('hex');
+}
+
 /**
  * Brings the index for `repoRoot` up to date. Only files whose content hash changed are
  * re-extracted; files depending on them get their outgoing calls rebuilt. One transaction.
@@ -28,6 +37,9 @@ export async function indexRepo(repoRoot: string, config: WalkConfig, store: Sto
   const started = performance.now();
   const root = resolve(repoRoot);
   const files = discoverFiles(root, config);
+  // A config change (e.g. a new API client wrapper) changes the facts of files whose content didn't change.
+  const settings = extractionSettingsHash(config);
+  if ((await store.getIndexSetting(EXTRACTION_SETTINGS)) !== settings) await store.resetIndexForSetting(EXTRACTION_SETTINGS, settings);
   const stored = await store.getFileHashes();
 
   const present = new Set(files.map((f) => f.path));
@@ -50,7 +62,7 @@ export async function indexRepo(repoRoot: string, config: WalkConfig, store: Sto
     }
     project.resolveSourceFileDependencies();
 
-    const extractor = new Extractor(project, root, present);
+    const extractor = new Extractor(project, root, present, { apiClientWrappers: config.apiClientWrappers });
     const fileFacts: FileFacts[] = changed.map((f) => ({
       path: f.path,
       hash: f.hash,
@@ -58,8 +70,8 @@ export async function indexRepo(repoRoot: string, config: WalkConfig, store: Sto
       ...extractor.extract(f.path),
     }));
     const callRefreshes = refreshed.map((path) => {
-      const { calls, routerCalls, sideEffects } = extractor.extract(path);
-      return { path, calls, routerCalls, sideEffects };
+      const { calls, routerCalls, sideEffects, reactFacts, apiCalls } = extractor.extract(path);
+      return { path, calls, routerCalls, sideEffects, reactFacts, apiCalls };
     });
 
     await store.applyIndexChanges({ files: fileFacts, removedPaths: removed, callRefreshes });

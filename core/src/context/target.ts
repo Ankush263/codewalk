@@ -46,3 +46,19 @@ export function parseFileTarget(arg: string): string {
   }
   return file;
 }
+
+/** `walk component <file>[#<ComponentName>]`; a null name means "the file's only component". */
+export interface ComponentTarget {
+  file: string;
+  name: string | null;
+}
+
+export function parseComponentTarget(arg: string): ComponentTarget {
+  const hash = arg.lastIndexOf('#');
+  const file = normalizeFile(hash > 0 ? arg.slice(0, hash) : arg);
+  const name = hash > 0 ? arg.slice(hash + 1).trim() : null;
+  if (!file) throw new TargetError('Expected <file>[#<ComponentName>], e.g. web/components/EnrollForm.tsx#EnrollForm');
+  if (name === '') throw new TargetError(`Missing component name after "#" in "${arg}"`);
+  if (RANGE.test(file)) throw new TargetError(`"${arg}" is a line range; use \`walk fn ${arg}\` instead.`);
+  return { file, name };
+}

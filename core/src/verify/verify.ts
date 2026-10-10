@@ -1,3 +1,4 @@
+import type { ComponentContext } from '../context/component.js';
 import type { EndpointContext } from '../context/endpoint.js';
 import type { FnContext } from '../context/fn.js';
 import type { Step, Walkthrough } from '../llm/schema.js';
@@ -89,6 +90,33 @@ export function endpointVerifyFacts(ctx: EndpointContext): VerifyFacts {
       ...ctx.errorPaths.map((p) => p.error),
       ...ctx.packages.flatMap((p) => [p.name, ...p.importedNames]),
       ctx.route.fullPath,
+    ]),
+  };
+}
+
+/** Everything a component walkthrough may name or cite. */
+export function componentVerifyFacts(ctx: ComponentContext): VerifyFacts {
+  const units = [ctx.component, ...ctx.hooks];
+  const symbols = [
+    ...units.flatMap((u) => [u.symbol, ...u.inner]),
+    ...ctx.callees.flatMap((c) => (c.callee ? [c.callee] : [])),
+    ...ctx.types.map((t) => t.symbol),
+    ...ctx.children.flatMap((c) => (c.symbol ? [c.symbol] : [])),
+  ];
+  return {
+    files: ctx.files,
+    packages: new Set(ctx.packages.map((p) => p.name)),
+    vocabulary: vocabularyOf([
+      ...units.map((u) => u.code?.lines.join('\n')),
+      ...ctx.callees.map((c) => c.code?.lines.join('\n')),
+      ...ctx.types.map((t) => t.code?.lines.join('\n')),
+      ...ctx.values.flatMap((v) => [v.name, v.code?.lines.join('\n')]),
+      ...symbols.flatMap((s) => [s.name, s.signature]),
+      ...ctx.callees.map((c) => c.calleeText),
+      ...ctx.children.flatMap((c) => [c.element, ...c.props.flatMap((p) => [p.name, p.value])]),
+      ...ctx.apiCalls.flatMap((a) => [a.method, a.urlPattern, a.urlText]),
+      ...units.flatMap((u) => [u.facts.propsType, ...u.facts.props, ...u.facts.state.flatMap((s) => [s.name, s.setter, s.initial]), ...u.facts.context.map((x) => x.context)]),
+      ...ctx.packages.flatMap((p) => [p.name, ...p.importedNames]),
     ]),
   };
 }

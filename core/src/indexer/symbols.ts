@@ -122,6 +122,17 @@ export function collectSymbols(sourceFile: SourceFile, isRouteReceiver: (receive
       return;
     }
 
+    // A hook's returned object: `return { mutate: (v) => ... }` or `() => ({ toggle: () => ... })`.
+    // Its inline functions become "<hook>.<name>" symbols, so `const { mutate } = useX(); mutate()`
+    // resolves to their code (calls.ts resolves the destructured name through its type).
+    if (owner?.kind === 'hook') {
+      const arrowBody = owner.bodyOwner && Node.isArrowFunction(owner.bodyOwner) && owner.bodyOwner.getBody().compilerNode === node.compilerNode;
+      const returned = Node.isReturnStatement(node) ? unwrap(node.getExpression()) : arrowBody ? unwrap(node) : undefined;
+      if (returned && Node.isObjectLiteralExpression(returned)) {
+        return returned.forEachChild((c) => visit(c, null, owner.name));
+      }
+    }
+
     // `router.get('/x', (req, res) => ...)`: the inline handler is a symbol, so it can be cited,
     // called from, and tagged with side effects.
     if (Node.isCallExpression(node)) {

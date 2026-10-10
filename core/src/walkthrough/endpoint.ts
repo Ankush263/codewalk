@@ -1,51 +1,36 @@
-import { dirname, join } from 'node:path';
 import type { EndpointContext, EndpointNode } from '../context/endpoint.js';
 import type { CodeBlock } from '../context/fn.js';
-import { DocsResolver } from '../docs/resolve.js';
 import { ENDPOINT_SYSTEM_PROMPT, renderEndpointPrompt } from '../llm/endpointPrompt.js';
-import { generateWalkthrough, type LlmProvider } from '../llm/generate.js';
+import type { LlmProvider } from '../llm/generate.js';
 import type { Reference } from '../llm/schema.js';
 import { endpointDiagram } from '../render/mermaid.js';
-import { endpointVerifyFacts, verifyWalkthrough } from '../verify/verify.js';
-import { NoVerifiedStepsError, type FnWalkthrough } from './fn.js';
+import { endpointVerifyFacts } from '../verify/verify.js';
+import { explainGrounded } from './explain.js';
+import type { FnWalkthrough } from './fn.js';
 import { hashLines, type BlockRef, type EndpointOverview, type Section, type SourceFiles } from './saved.js';
 import { droppedNote, findLine, recordSection } from './section.js';
 
 // `walk endpoint` after the facts are gathered: LLM -> verifier -> docs links (CLAUDE.md §6.3, §8.3).
 
 export async function explainEndpoint(provider: LlmProvider, ctx: EndpointContext, repoRoot: string): Promise<FnWalkthrough> {
-  const { walkthrough, attempts } = await generateWalkthrough(provider, { system: ENDPOINT_SYSTEM_PROMPT, prompt: renderEndpointPrompt(ctx) });
-  const verified = verifyWalkthrough(walkthrough, endpointVerifyFacts(ctx));
-  const keptSteps = verified.walkthrough.stages.reduce((n, s) => n + s.steps.length, 0);
-  if (keptSteps === 0) throw new NoVerifiedStepsError(verified.dropped);
-
-  const packages = new Map(ctx.packages.map((p) => [p.name, p]));
-  const resolvers = new Map<string, DocsResolver>();
-  // Each step's docs resolve from its own file's directory (nearest package.json / node_modules).
-  const docsFor = (file: string) => {
-    const dir = dirname(join(repoRoot, file));
-    if (!resolvers.has(dir)) resolvers.set(dir, new DocsResolver(repoRoot, dir));
-    return resolvers.get(dir)!;
-  };
-  const unresolved = [...new Set([...ctx.unresolved.map((u) => u.note), ...verified.walkthrough.unresolved])];
   const handler = ctx.chain.at(-1)!;
-
-  return {
-    scope: {
-      file: handler.symbol?.file ?? handler.registeredAt.file,
-      start: handler.symbol?.startLine ?? handler.registeredAt.line,
-      end: handler.symbol?.endLine ?? handler.registeredAt.endLine,
-      symbol: ctx.scopeRef,
+  return explainGrounded(
+    provider,
+    {
+      system: ENDPOINT_SYSTEM_PROMPT,
+      prompt: renderEndpointPrompt(ctx),
+      facts: endpointVerifyFacts(ctx),
+      packages: ctx.packages,
+      unresolved: ctx.unresolved.map((u) => u.note),
+      scope: {
+        file: handler.symbol?.file ?? handler.registeredAt.file,
+        start: handler.symbol?.startLine ?? handler.registeredAt.line,
+        end: handler.symbol?.endLine ?? handler.registeredAt.endLine,
+        symbol: ctx.scopeRef,
+      },
     },
-    title: verified.walkthrough.title,
-    summary: verified.walkthrough.summary,
-    stages: verified.walkthrough.stages.map((stage) => ({
-      name: stage.name,
-      steps: stage.steps.map((step) => ({ ...step, docLinks: step.docs.map((d) => docsFor(step.code_ref.file).resolve(d, packages.get(d.package)!)) })),
-    })),
-    unresolved,
-    verification: { attempts, keptSteps, dropped: verified.dropped, removedDocs: verified.removedDocs },
-  };
+    repoRoot,
+  );
 }
 
 /** The blocks an endpoint walkthrough explains: the handler first, then chain, error handlers, callees, registrations. */
@@ -77,11 +62,11 @@ export async function generateEndpointSection(
 }
 
 /**
- * The saved endpoint section moved to where its blocks are now, or null when it must be regenerated:
+ * The saved endpoint or component section moved to where its blocks are now, or null when it must be regenerated:
  * the chain or --depth changed, a block was added, removed or edited, or a step cites code outside every
  * block. Steps and references move with their block; other references follow reuseSection's rules.
  */
-export function reuseEndpointSection(prev: Section, current: { blocks: BlockRef[]; chainHash: string }, files: SourceFiles, depth: number): Section | null {
+export function reuseMultiBlockSection(prev: Section, current: { blocks: BlockRef[]; chainHash: string }, files: SourceFiles, depth: number): Section | null {
   if (!prev.blocks || prev.depth !== depth || prev.chainHash !== current.chainHash || prev.blocks.length !== current.blocks.length) return null;
   const moved: { from: BlockRef; to: BlockRef }[] = [];
   for (const from of prev.blocks) {

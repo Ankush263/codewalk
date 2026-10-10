@@ -1,0 +1,133 @@
+{
+  "title": "How EnrollForm works",
+  "summary": "EnrollForm keeps the form values in state, renders controlled fields, and on submit calls the mutate function of useEnrollMutation, which posts the values to /api/patients/enroll and reports success back through onSuccess.",
+  "stages": [
+    {
+      "name": "Inputs and state",
+      "steps": [
+        {
+          "id": "s1",
+          "code_ref": { "file": "web/components/EnrollForm.tsx", "start": 18, "end": 19 },
+          "explanation": "`EnrollForm` receives one prop, `onEnrolled`, typed by `EnrollFormProps`. It owns one piece of state: `values`, created with `useState` from `EMPTY_FORM`, with `setValues` to replace it.",
+          "example": {
+            "input": "props { onEnrolled: (patient) => showPatient(patient.id) }; the form mounts",
+            "state_after": "values = { firstName: '', lastName: '', phone: '', dateOfBirth: '', consentGiven: false }"
+          },
+          "references": [
+            { "file": "web/components/EnrollForm.tsx", "line": 6, "role": "type" },
+            { "file": "web/types.ts", "line": 1, "role": "type" }
+          ],
+          "docs": [{ "package": "react", "symbol": "useState" }],
+          "concepts": ["props", "component state"],
+          "risks": []
+        }
+      ]
+    },
+    {
+      "name": "Render",
+      "steps": [
+        {
+          "id": "s2",
+          "code_ref": { "file": "web/components/EnrollForm.tsx", "start": 38, "end": 53 },
+          "explanation": "`EnrollForm` renders a `form` whose `onSubmit` is `handleSubmit`. Four `FormField` children each get a `label`, a `name`, the matching field of `values` and `handleChange` as `onChange`. A checkbox is bound to `values.consentGiven`, an alert `p` appears only when `error` is set, and the `button` is disabled while `status` is `submitting` or consent is missing.",
+          "example": {
+            "input": "first render with the empty form",
+            "state_after": "four empty FormField inputs, unchecked consent box, no alert, button disabled (no consent yet)"
+          },
+          "references": [{ "file": "web/components/FormField.tsx", "line": 11, "role": "callee" }],
+          "docs": [],
+          "concepts": ["controlled inputs", "conditional rendering"],
+          "risks": []
+        }
+      ]
+    },
+    {
+      "name": "Hook: useEnrollMutation",
+      "steps": [
+        {
+          "id": "s3",
+          "code_ref": { "file": "web/hooks/useEnrollMutation.ts", "start": 11, "end": 13 },
+          "explanation": "`useEnrollMutation` takes an optional `onSuccess` callback and owns two pieces of state: `status`, starting at `idle`, and `error`, starting at `null`.",
+          "example": { "input": "useEnrollMutation({ onSuccess }) called by EnrollForm", "state_after": "status = 'idle'; error = null" },
+          "references": [{ "file": "web/components/EnrollForm.tsx", "line": 20, "role": "caller" }],
+          "docs": [{ "package": "react", "symbol": "useState" }],
+          "concepts": ["custom hook"],
+          "risks": []
+        },
+        {
+          "id": "s4",
+          "code_ref": { "file": "web/hooks/useEnrollMutation.ts", "start": 15, "end": 26 },
+          "explanation": "`mutate` sets `status` to `submitting` and clears `error`, then awaits `api.post` with the form `values`. On success it sets `status` to `success` and calls `onSuccess` with the returned `patient`. If the request throws, it sets `status` to `error` and picks a message: an `ApiError` with status 409 means the patient is already enrolled.",
+          "example": {
+            "input": "mutate({ firstName: 'Asha', lastName: 'Rao', phone: '+91 98765 43210', dateOfBirth: '1990-04-02', consentGiven: true })",
+            "state_after": "status = 'success'; error = null; patient = { id: 'p_101', firstName: 'Asha', ... } (server response assumed)"
+          },
+          "references": [
+            { "file": "web/apiClient.ts", "line": 28, "role": "callee" },
+            { "file": "web/components/EnrollForm.tsx", "line": 35, "role": "caller" }
+          ],
+          "docs": [],
+          "concepts": ["async request state"],
+          "risks": ["A 409 shows 'This patient is already enrolled.'; any other failure shows 'Enrollment failed.'"]
+        }
+      ]
+    },
+    {
+      "name": "Event handlers",
+      "steps": [
+        {
+          "id": "s5",
+          "code_ref": { "file": "web/components/EnrollForm.tsx", "start": 27, "end": 30 },
+          "explanation": "`handleChange` reads `name`, `value`, `type` and `checked` from the changed input and updates `values` with `setValues`, using `checked` for the checkbox and `value` for text fields.",
+          "example": { "input": "the user types Asha into First name", "state_after": "values.firstName = 'Asha'" },
+          "references": [{ "file": "web/components/EnrollForm.tsx", "line": 40, "role": "caller" }],
+          "docs": [],
+          "concepts": ["controlled inputs"],
+          "risks": []
+        },
+        {
+          "id": "s6",
+          "code_ref": { "file": "web/components/EnrollForm.tsx", "start": 32, "end": 36 },
+          "explanation": "`handleSubmit` stops the browser's own form submission with `preventDefault`, does nothing unless `values.consentGiven` is true, and then calls `mutate` with `values`.",
+          "example": { "input": "the user ticks consent and clicks Enroll", "state_after": "mutate(values) called; status = 'submitting'" },
+          "references": [{ "file": "web/hooks/useEnrollMutation.ts", "line": 15, "role": "callee" }],
+          "docs": [],
+          "concepts": ["form submission"],
+          "risks": ["Without consent the click does nothing (the button is also disabled)."]
+        },
+        {
+          "id": "s7",
+          "code_ref": { "file": "web/components/EnrollForm.tsx", "start": 20, "end": 25 },
+          "explanation": "The `onSuccess` callback EnrollForm passes to `useEnrollMutation` resets the form with `setValues` to `EMPTY_FORM` and hands the new `patient` to `onEnrolled`.",
+          "example": { "input": "the enroll request succeeded with patient p_101", "state_after": "values = EMPTY_FORM; onEnrolled(patient) called" },
+          "references": [{ "file": "web/hooks/useEnrollMutation.ts", "line": 21, "role": "caller" }],
+          "docs": [],
+          "concepts": ["callback props"],
+          "risks": []
+        }
+      ]
+    },
+    {
+      "name": "Data fetching",
+      "steps": [
+        {
+          "id": "s8",
+          "code_ref": { "file": "web/hooks/useEnrollMutation.ts", "start": 19, "end": 19 },
+          "explanation": "`api.post` sends `POST /api/patients/enroll` with `values` as the JSON body. It is reached from `onSubmit` on the `form` through `handleSubmit` and `mutate`.",
+          "example": {
+            "input": "POST /api/patients/enroll with the values above",
+            "state_after": "request sent with Content-Type application/json and the bearer token from localStorage"
+          },
+          "references": [
+            { "file": "web/apiClient.ts", "line": 28, "role": "callee" },
+            { "file": "web/components/EnrollForm.tsx", "line": 39, "role": "caller" }
+          ],
+          "docs": [],
+          "concepts": ["REST API call"],
+          "risks": ["Network errors and non-2xx responses throw ApiError, which mutate turns into an error message."]
+        }
+      ]
+    }
+  ],
+  "unresolved": []
+}

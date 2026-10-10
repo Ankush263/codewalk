@@ -41,6 +41,7 @@ export const configSchema = z.object({
 });
 
 export type WalkConfig = z.infer<typeof configSchema>;
+export type ApiClientWrapper = WalkConfig['apiClientWrappers'][number];
 
 export class ConfigError extends Error {
   constructor(message: string) {

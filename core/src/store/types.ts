@@ -42,6 +42,107 @@ export interface SideEffectFact {
   line: number;
 }
 
+/** A `useState` / `useReducer` binding owned by a component or hook. */
+export interface StateVarFact {
+  name: string;
+  setter: string | null;
+  hook: 'useState' | 'useReducer';
+  /** useState's argument / useReducer's initial state, one line; null when absent. */
+  initial: string | null;
+  line: number;
+}
+
+/** A hook call made by a component or hook: built-in, package or repo. */
+export interface HookUseFact {
+  /** Callee text, e.g. "useState", "useEnrollMutation", "React.useMemo". */
+  name: string;
+  line: number;
+  /** The repo hook called; null for package hooks. */
+  callee: SymbolKey | null;
+  /** e.g. "react", "@tanstack/react-query"; null for repo hooks. */
+  package: string | null;
+  /** Names the result is bound to: `const { mutate, status } = useX()` -> ["mutate", "status"]. */
+  bindings: string[];
+  /** Inline functions passed in object-literal arguments: `useX({ onSuccess: (p) => ... })`. */
+  callbacks: { name: string; line: number }[];
+}
+
+export interface ContextUseFact {
+  /** The argument of useContext, e.g. "AuthContext". */
+  context: string;
+  line: number;
+  bindings: string[];
+}
+
+/** useEffect / useLayoutEffect / useInsertionEffect / useMemo / useCallback. */
+export interface EffectFact {
+  hook: string;
+  line: number;
+  endLine: number;
+  /** Dependency array entries; null when there is none (an effect then runs after every render). */
+  deps: string[] | null;
+  /** `const total = useMemo(...)` -> "total". */
+  binding: string | null;
+}
+
+/** A JSX element in a component's render tree (CLAUDE.md §6.4 item 2). */
+export interface RenderNodeFact {
+  /** Tag text, e.g. "form", "FormField", "Foo.Bar". */
+  element: string;
+  kind: 'component' | 'element';
+  line: number;
+  /** Number of enclosing JSX elements. */
+  depth: number;
+  /** The repo component rendered; null for intrinsic elements and package components. */
+  component: SymbolKey | null;
+  /** Package of a component element, e.g. "react-router-dom". */
+  package: string | null;
+  /** Attributes as written: string literals keep their quotes; `{expr}` becomes "expr"; spreads are "...". */
+  props: { name: string; value: string }[];
+  /** e.g. "error", "!(count > 0)", "a && b"; null when always rendered. */
+  condition: string | null;
+}
+
+/** An `on*` JSX attribute: which user action runs which code. */
+export interface HandlerBindingFact {
+  element: string;
+  /** e.g. "onSubmit". */
+  event: string;
+  /** Source text of the handler expression, e.g. "handleSubmit" or "() => setOpen(true)". */
+  handler: string;
+  line: number;
+  endLine: number;
+  /** The repo function named by the handler; null for inline functions and unknown values. */
+  target: SymbolKey | null;
+}
+
+/** React facts of one component or hook (CLAUDE.md §6.4). Code inside nested symbols is not included. */
+export interface ReactFact {
+  symbol: Pick<SymbolKey, 'name' | 'startLine'>;
+  /** Type annotation of the first parameter, one line. */
+  propsType: string | null;
+  /** Components: names destructured from the props parameter. Hooks: every parameter's names. */
+  props: string[];
+  state: StateVarFact[];
+  hooks: HookUseFact[];
+  context: ContextUseFact[];
+  effects: EffectFact[];
+  render: RenderNodeFact[];
+  handlers: HandlerBindingFact[];
+}
+
+/** An HTTP request made by frontend code (CLAUDE.md §6.4 item 5). Phase 5 matches it to routes. */
+export interface ApiCallFact {
+  symbol: Pick<SymbolKey, 'name' | 'startLine'>;
+  /** GET, POST, ...; UNKNOWN when a `method` option isn't a literal. */
+  method: string;
+  /** e.g. "/api/patients/:id" from `/api/patients/${id}`. */
+  urlPattern: string;
+  /** The URL argument as written. */
+  urlText: string;
+  line: number;
+}
+
 export interface ImportFact {
   importedPath: string;
   /** Repo-relative file the import resolves to; null for packages. */
@@ -95,13 +196,15 @@ export interface FileFacts {
   /** Express registrations in this file (Phase 3). */
   routerCalls?: RouterCallFact[];
   sideEffects?: SideEffectFact[];
+  reactFacts?: ReactFact[];
+  apiCalls?: ApiCallFact[];
 }
 
 export interface IndexChanges {
   files?: FileFacts[];
   removedPaths?: string[];
   /** Unchanged files whose outgoing calls are rebuilt (their symbols are kept). */
-  callRefreshes?: { path: string; calls: CallFact[]; routerCalls?: RouterCallFact[]; sideEffects?: SideEffectFact[] }[];
+  callRefreshes?: { path: string; calls: CallFact[]; routerCalls?: RouterCallFact[]; sideEffects?: SideEffectFact[]; reactFacts?: ReactFact[]; apiCalls?: ApiCallFact[] }[];
 }
 
 export interface IndexStats {
@@ -220,5 +323,19 @@ export interface SideEffectRecord {
   symbolId: number;
   kind: SideEffectKind;
   detail: string;
+  line: number;
+}
+
+/** A component's or hook's React facts, as read back for context building. */
+export interface ReactFactRecord extends Omit<ReactFact, 'symbol'> {
+  symbolId: number;
+}
+
+export interface ApiCallRecord {
+  id: number;
+  symbolId: number;
+  method: string;
+  urlPattern: string;
+  urlText: string;
   line: number;
 }

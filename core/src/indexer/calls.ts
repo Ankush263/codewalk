@@ -72,23 +72,32 @@ function resolveCallee(expr: Node, repo: RepoLookup): Pick<CallFact, 'callee' | 
   }
   if (Node.isPropertyAccessExpression(expr) && EVENT_DISPATCH_METHODS.has(expr.getName())) return unresolved;
 
-  // 1. The checker's symbol for the called name.
   const decl = firstDeclaration(symbolOf(expr));
-  if (decl) {
-    if (!repo.isRepoFile(decl.getSourceFile())) return external;
-    const key = repo.keyFor(decl);
-    if (key) return { callee: key, resolved: true };
-  }
-
-  // 2. The callee's type, e.g. `mutate` destructured from a hook's return value.
-  for (const typeDecl of expr.getType().getSymbol()?.getDeclarations() ?? []) {
-    if (!repo.isRepoFile(typeDecl.getSourceFile())) continue;
-    const key = repo.keyFor(typeDecl);
-    if (key) return { callee: key, resolved: true };
-  }
+  if (decl && !repo.isRepoFile(decl.getSourceFile())) return external;
+  const key = repoFunctionOf(expr, repo);
+  if (key) return { callee: key, resolved: true };
 
   // 3. Where the root identifier came from.
   return originOfExpression(expr, repo, 0) !== null ? external : unresolved;
+}
+
+/**
+ * The repo function an expression refers to, by (1) the checker's symbol for the name, then (2) its
+ * type, e.g. `mutate` destructured from a hook's return value. Null for packages and unknown values.
+ */
+export function repoFunctionOf(expr: Node, repo: RepoLookup): SymbolKey | null {
+  const decl = firstDeclaration(symbolOf(expr));
+  if (decl) {
+    if (!repo.isRepoFile(decl.getSourceFile())) return null;
+    const key = repo.keyFor(decl);
+    if (key) return key;
+  }
+  for (const typeDecl of expr.getType().getSymbol()?.getDeclarations() ?? []) {
+    if (!repo.isRepoFile(typeDecl.getSourceFile())) continue;
+    const key = repo.keyFor(typeDecl);
+    if (key) return key;
+  }
+  return null;
 }
 
 /**

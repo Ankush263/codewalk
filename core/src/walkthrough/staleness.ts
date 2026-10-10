@@ -45,9 +45,9 @@ export interface WalkthroughStatus {
   uncovered: string[];
   /** File walkthroughs only: the file itself no longer exists. */
   fileRemoved: boolean;
-  /** Endpoint walkthroughs only: the route's middleware chain resolves differently now. */
+  /** Endpoint: the middleware chain resolves differently now. Component: its hooks, children, handlers or API calls changed. */
   chainChanged: boolean;
-  /** Endpoint walkthroughs only: the route is no longer in the index. */
+  /** Endpoint: the route is gone. Component: the component is gone. */
   routeRemoved: boolean;
   staleSteps: number;
   totalSteps: number;
@@ -125,8 +125,8 @@ function findText(block: BlockRef, lines: string[]): { start: number; end: numbe
 }
 
 /**
- * `chains` gives the current chain hash of an endpoint scope (null: route gone). Without it, endpoint
- * walkthroughs are judged by their code alone.
+ * `chains` gives the current chain hash of an endpoint scope or structure hash of a component scope
+ * (null: gone). Without it, endpoint and component walkthroughs are judged by their code alone.
  */
 export function checkWalkthrough(saved: SavedWalkthrough, source: CurrentSource, chains?: (scopeRef: string) => string | null | undefined): WalkthroughStatus {
   const sections = saved.sections.map((s) => checkSection(s, source));
@@ -138,7 +138,8 @@ export function checkWalkthrough(saved: SavedWalkthrough, source: CurrentSource,
     uncovered = file ? walkableSymbols(file.symbols).map((s) => s.name).filter((name) => !covered.has(name)) : [];
     fileRemoved = file === null;
   }
-  const chain = saved.scopeKind === 'endpoint' && chains ? chains(saved.scopeRef) : undefined;
+  const structural = saved.scopeKind === 'endpoint' || saved.scopeKind === 'component';
+  const chain = structural && chains ? chains(saved.scopeRef) : undefined;
   const routeRemoved = chain === null;
   const chainChanged = typeof chain === 'string' && chain !== saved.sections[0]?.chainHash;
   const steps = sections.flatMap((s) => s.steps);

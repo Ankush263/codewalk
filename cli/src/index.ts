@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command, InvalidArgumentError, Option } from 'commander';
 import { runFile, type FileOptions } from './commands/file.js';
+import { runComponent, type ComponentOptions } from './commands/component.js';
 import { runEndpoint, type EndpointOptions } from './commands/endpoint.js';
 import { runFn, type FnOptions } from './commands/fn.js';
 import { runList } from './commands/list.js';
@@ -64,6 +65,18 @@ program
   .addOption(new Option('--out <format>', 'output format').choices(['terminal', 'json', 'md']).default('terminal'))
   .action(async (route: string, opts: EndpointOptions) => {
     process.exitCode = await runEndpoint(process.cwd(), route, opts, io);
+  });
+
+program
+  .command('component')
+  .description('walkthrough of a React component: props, state, render tree, hooks, handlers, API calls')
+  .argument('<target>', 'e.g. web/components/EnrollForm.tsx#EnrollForm (the name is optional when the file has one component)')
+  .option('--no-llm', 'print only the static facts')
+  .option('--depth <n>', 'how many levels of custom hooks and calls to expand', parseDepth, 2)
+  .option('--refresh', 'ignore the saved walkthrough and regenerate', false)
+  .addOption(new Option('--out <format>', 'output format').choices(['terminal', 'json', 'md']).default('terminal'))
+  .action(async (target: string, opts: ComponentOptions) => {
+    process.exitCode = await runComponent(process.cwd(), target, opts, io);
   });
 
 program
