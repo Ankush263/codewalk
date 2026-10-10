@@ -276,6 +276,30 @@ export interface WalkthroughRecord {
   createdAt: Date;
 }
 
+/** A verified answer: references outside the context removed, problems listed as warnings. */
+export interface AnswerFact {
+  answer: string;
+  references: { file: string; line: number; role: 'caller' | 'callee' | 'type' }[];
+  warnings: string[];
+}
+
+export interface QuestionFact {
+  scopeKind: string;
+  scopeRef: string;
+  /** Flattened step id: "s2", or "<symbol>/s2" in a file walkthrough. */
+  stepId: string;
+  question: string;
+  answer: AnswerFact;
+  /** The step's hash when asked; the answer is stale once the step's code changes. */
+  stepHash: string;
+  model: string;
+}
+
+export interface QuestionRecord extends QuestionFact {
+  id: number;
+  createdAt: Date;
+}
+
 export type MiddlewarePhase = 'app' | 'router' | 'route' | 'error';
 
 /** A RouterCallFact with the file it was found in, as stitching reads it back. */

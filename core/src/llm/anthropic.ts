@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import type { LlmMessage, LlmProvider } from './generate.js';
 import { walkthroughSchema } from './schema.js';
+import type { z } from 'zod';
 
 export class LlmRequestError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -20,7 +21,7 @@ export class AnthropicProvider implements LlmProvider {
     private client?: Anthropic,
   ) {}
 
-  async generate({ system, messages }: { system: string; messages: LlmMessage[] }): Promise<string> {
+  async generate({ system, messages, schema }: { system: string; messages: LlmMessage[]; schema?: z.ZodType }): Promise<string> {
     let response: Anthropic.Message;
     try {
       // Streamed so a long walkthrough (plus thinking) doesn't hit the HTTP timeout.
@@ -31,7 +32,7 @@ export class AnthropicProvider implements LlmProvider {
           max_tokens: 32000,
           system,
           messages,
-          output_config: { format: zodOutputFormat(walkthroughSchema) },
+          output_config: { format: zodOutputFormat((schema ?? walkthroughSchema) as typeof walkthroughSchema) },
         })
         .finalMessage();
     } catch (err) {
@@ -39,10 +40,10 @@ export class AnthropicProvider implements LlmProvider {
     }
 
     if (response.stop_reason === 'refusal') {
-      throw new LlmRequestError('The model declined to write this walkthrough.');
+      throw new LlmRequestError('The model declined to answer.');
     }
     if (response.stop_reason === 'max_tokens') {
-      throw new LlmRequestError('The walkthrough was cut off at max_tokens; try a smaller target or a lower --depth.');
+      throw new LlmRequestError('The response was cut off at max_tokens; try a smaller target or a lower --depth.');
     }
     return response.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
   }

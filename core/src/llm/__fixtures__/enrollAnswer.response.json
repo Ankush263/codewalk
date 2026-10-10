@@ -1,0 +1,7 @@
+{
+  "answer": "When `redis.get` finds no session, `requireAuth` passes an `UnauthorizedError` to `next`, and `errorHandler` answers 401.",
+  "references": [
+    { "file": "api/middleware/auth.ts", "line": 19, "role": "callee" },
+    { "file": "api/nowhere.ts", "line": 3, "role": "callee" }
+  ]
+}

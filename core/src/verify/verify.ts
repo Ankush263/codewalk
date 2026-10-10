@@ -2,7 +2,8 @@ import type { ComponentContext } from '../context/component.js';
 import type { EndpointContext } from '../context/endpoint.js';
 import type { TraceContext } from '../context/trace.js';
 import type { FnContext } from '../context/fn.js';
-import type { Step, Walkthrough } from '../llm/schema.js';
+import type { Answer } from '../llm/answer.js';
+import type { Reference, Step, Walkthrough } from '../llm/schema.js';
 
 // The verifier (CLAUDE.md §8.3). Every location a step cites must be a real line of a file in the
 // context, and every identifier its explanation names in backticks must appear in the context's
@@ -36,8 +37,13 @@ export interface VerifyFacts {
   packages: Set<string>;
 }
 
+/** Everything a `walk fn` (or file section) walkthrough may name or cite. */
+export function fnVerifyFacts(ctx: FnContext): VerifyFacts {
+  return { files: ctx.files, vocabulary: buildVocabulary(ctx), packages: new Set(ctx.packages.map((p) => p.name)) };
+}
+
 export function verifyFnWalkthrough(walkthrough: Walkthrough, ctx: FnContext): VerifyResult {
-  return verifyWalkthrough(walkthrough, { files: ctx.files, vocabulary: buildVocabulary(ctx), packages: new Set(ctx.packages.map((p) => p.name)) });
+  return verifyWalkthrough(walkthrough, fnVerifyFacts(ctx));
 }
 
 export function verifyWalkthrough(walkthrough: Walkthrough, facts: VerifyFacts): VerifyResult {
@@ -127,6 +133,29 @@ export function traceVerifyFacts(ctx: TraceContext): VerifyFacts {
   const front = componentVerifyFacts(ctx.component);
   const back = endpointVerifyFacts(ctx.endpoint);
   return { files: ctx.files, packages: new Set([...front.packages, ...back.packages]), vocabulary: new Set([...front.vocabulary, ...back.vocabulary]) };
+}
+
+/**
+ * The verifier rules for an answer (CLAUDE.md §8.3): references outside the context are removed; names the
+ * facts don't contain are reported. An answer is kept either way, with its warnings shown next to it.
+ */
+export function checkAnswer(answer: Answer, facts: VerifyFacts): { references: Reference[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const references = answer.references.filter((r) => {
+    const lines = facts.files[r.file];
+    if (lines === undefined) {
+      warnings.push(`Removed reference ${r.file}:${r.line}: not part of the indexed context.`);
+      return false;
+    }
+    if (r.line < 1 || r.line > lines) {
+      warnings.push(`Removed reference ${r.file}:${r.line}: outside the file's lines 1-${lines}.`);
+      return false;
+    }
+    return true;
+  });
+  const unknown = [...new Set(codeSpans(answer.answer).flatMap(identifiers))].filter((id) => !facts.vocabulary.has(id));
+  if (unknown.length > 0) warnings.push(`Names identifiers not found in the code or index: ${unknown.map((u) => `\`${u}\``).join(', ')}`);
+  return { references, warnings };
 }
 
 function checkStep(step: Step, files: Record<string, number>, vocabulary: Set<string>): string[] {

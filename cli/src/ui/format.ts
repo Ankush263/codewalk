@@ -1,4 +1,4 @@
-import { describeLink, describeTrigger, endpointDiagram, traceDiagram, type ComponentContext, type TraceContext, type EndpointContext, type EndpointNode, type FileContext, type ScopeKind, type WalkthroughStatus, type CodeBlock, type FnContext, type FnWalkthrough, type WalkthroughStep } from '@codewalk/core';
+import { describeLink, describeStaleness, describeTrigger, endpointDiagram, traceDiagram, type ComponentContext, type TraceContext, type EndpointContext, type EndpointNode, type FileContext, type ScopeKind, type WalkthroughStatus, type CodeBlock, type FnContext, type FnWalkthrough, type WalkthroughStep } from '@codewalk/core';
 
 // Plain-text renderings: the `--no-llm` facts and the non-interactive walkthrough (piped output).
 
@@ -206,23 +206,9 @@ export function formatList(rows: ListRow[]): string {
   return rows
     .map((r) => {
       const s = r.status;
-      const detail = s.fresh ? `${s.totalSteps} steps` : staleDetail(r.scopeKind, s);
+      const detail = s.fresh ? `${s.totalSteps} steps` : describeStaleness(r.scopeKind, s);
       const saved = new Date(r.savedAt).toISOString().slice(0, 16).replace('T', ' ');
       return `${s.fresh ? 'fresh' : 'stale'}  ${r.scopeKind.padEnd(kindWidth)}  ${r.scopeRef.padEnd(width)}  ${detail} · saved ${saved}`;
     })
     .join('\n');
-}
-
-function staleDetail(kind: ScopeKind, s: WalkthroughStatus): string {
-  const label = (x: WalkthroughStatus['sections'][number]) => x.symbol ?? `${x.file} lines`;
-  const changed = s.sections.filter((x) => x.state === 'changed').flatMap((x) => (x.changedBlocks?.length ? x.changedBlocks : [label(x)]));
-  const removed = s.sections.filter((x) => x.state === 'missing').map(label);
-  const parts = [`${s.staleSteps}/${s.totalSteps} steps stale`];
-  if (s.fileRemoved) parts.push('file removed');
-  if (s.routeRemoved) parts.push(kind === 'component' ? 'component removed' : kind === 'trace' ? 'trace removed' : 'route removed');
-  if (s.chainChanged) parts.push(kind === 'component' ? 'structure changed' : kind === 'trace' ? 'trace changed' : 'middleware chain changed');
-  if (changed.length) parts.push(`changed: ${changed.join(', ')}`);
-  if (removed.length) parts.push(`removed: ${removed.join(', ')}`);
-  if (s.uncovered.length) parts.push(`not covered: ${s.uncovered.join(', ')}`);
-  return parts.join(' · ');
 }

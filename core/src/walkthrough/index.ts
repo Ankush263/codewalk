@@ -7,3 +7,6 @@ export * from './saved.js';
 export * from './staleness.js';
 export { componentBlocks, componentOverviewOf, explainComponent, generateComponentSection } from './component.js';
 export { explainTrace, generateTraceSection, traceBlocks, traceOverviewOf } from './trace.js';
+export { askQuestion, locateStep } from './question.js';
+export { toQuestionView, walkthroughDetail, walkthroughList } from './detail.js';
+export { walkthroughStatus, walkthroughStatuses } from './status.js';

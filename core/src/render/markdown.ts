@@ -1,45 +1,56 @@
+import type { QuestionRecord } from '../store/types.js';
 import type { FnWalkthrough, WalkthroughStep } from '../walkthrough/fn.js';
-import { componentNotes, endpointNotes, traceNotes, flattenWalkthrough, overviewNotes, type SavedWalkthrough } from '../walkthrough/saved.js';
+import { componentNotes, endpointNotes, explainedSteps, flattenWalkthrough, overviewNotes, questionOutdated, traceNotes, type SavedWalkthrough } from '../walkthrough/saved.js';
 
 // Markdown export (CLAUDE.md §9): saved next to the JSON in .walkthrough/walkthroughs/ and printed
 // by `--out md`. Code snippets come from the current source, which matches the saved line numbers.
 
-export function renderMarkdown(saved: SavedWalkthrough, codeLines: (file: string) => string[]): string {
+export function renderMarkdown(saved: SavedWalkthrough, codeLines: (file: string) => string[], questions: QuestionRecord[] = []): string {
   const out: string[] = [];
+  const explained = explainedSteps(saved);
+  const outdated = (q: QuestionRecord) => questionOutdated(explained, q);
   if (saved.scopeKind === 'fn') {
     const w = saved.sections[0].walkthrough;
     out.push(`# ${w.title}`, '', `\`${location(w)}\``, '', w.summary);
-    renderStages(out, w, 2, codeLines);
+    renderStages(out, w, 2, codeLines, questions, outdated);
   } else if (saved.scopeKind === 'endpoint') {
     const w = saved.sections[0].walkthrough;
     const e = saved.endpoint!;
     out.push(`# ${w.title}`, '', `\`${e.method} ${e.path}\``, '', w.summary, '', '## Route', '', ...endpointNotes(e).map((n) => `- ${n}`));
     out.push('', '## Sequence', '', '```mermaid', e.diagram, '```');
-    renderStages(out, w, 2, codeLines);
+    renderStages(out, w, 2, codeLines, questions, outdated);
   } else if (saved.scopeKind === 'component') {
     const w = saved.sections[0].walkthrough;
     out.push(`# ${w.title}`, '', `\`${saved.scopeRef}\``, '', w.summary, '', '## Component', '', ...componentNotes(saved.component!).map((n) => `- ${n}`));
-    renderStages(out, w, 2, codeLines);
+    renderStages(out, w, 2, codeLines, questions, outdated);
   } else if (saved.scopeKind === 'trace') {
     const w = saved.sections[0].walkthrough;
     const t = saved.trace!;
     out.push(`# ${w.title}`, '', `\`${saved.scopeRef}\``, '', w.summary, '', '## Trace', '', ...traceNotes(t).map((n) => `- ${n}`));
     out.push('', '## Sequence', '', '```mermaid', t.diagram, '```');
-    renderStages(out, w, 2, codeLines);
+    renderStages(out, w, 2, codeLines, questions, outdated);
   } else {
     const o = saved.overview!;
     out.push(`# How ${o.file} works`, '', '## Overview', '', ...overviewNotes(o).map((n) => `- ${n}`));
     saved.sections.forEach((s, i) => {
       const w = s.walkthrough;
       out.push('', `## ${i + 1}. ${s.block.symbol ?? 'block'} (\`${location(w)}\`)`, '', w.summary);
-      renderStages(out, w, 3, codeLines);
+      renderStages(out, w, 3, codeLines, questions, outdated, (id) => `${s.block.symbol ?? 'block'}/${id}`);
     });
   }
   renderFooter(out, flattenWalkthrough(saved));
   return `${out.join('\n')}\n`;
 }
 
-function renderStages(out: string[], w: FnWalkthrough, level: number, codeLines: (file: string) => string[]) {
+function renderStages(
+  out: string[],
+  w: FnWalkthrough,
+  level: number,
+  codeLines: (file: string) => string[],
+  questions: QuestionRecord[] = [],
+  outdated: (q: QuestionRecord) => boolean = () => false,
+  keyOf: (stepId: string) => string = (id) => id,
+) {
   const h = '#'.repeat(level);
   let n = 0;
   for (const stage of w.stages) {
@@ -48,8 +59,24 @@ function renderStages(out: string[], w: FnWalkthrough, level: number, codeLines:
       n++;
       const { file, start, end } = step.code_ref;
       out.push('', `${h}# Step ${n} · \`${file}:${start}-${end}\``, '', fence(file, start, end, codeLines(file)), '', ...stepBody(step));
+      out.push(...questionLines(questions.filter((q) => q.stepId === keyOf(step.id)), outdated));
     }
   }
+}
+
+function questionLines(questions: QuestionRecord[], outdated: (q: QuestionRecord) => boolean): string[] {
+  if (questions.length === 0) return [];
+  // Continuation lines are indented so a multi-line answer stays inside its list item.
+  const indent = (text: string) => text.replace(/\n/g, '\n  ');
+  return [
+    '',
+    '**Questions**',
+    ...questions.flatMap((q) => [
+      `- **Q:** ${indent(q.question)}${outdated(q) ? ' *(stale: asked about an earlier explanation)*' : ''}`,
+      `  **A:** ${indent(q.answer.answer)}`,
+      ...q.answer.warnings.map((w) => `  ⚠ ${w}`),
+    ]),
+  ];
 }
 
 function stepBody(step: WalkthroughStep): string[] {

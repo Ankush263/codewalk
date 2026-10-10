@@ -455,3 +455,26 @@ describe('store: React facts, API calls and index settings', () => {
     expect(new Set((await store.getFileHashes()).values())).toEqual(new Set(['']));
   });
 });
+
+describe('store: walkthrough questions', () => {
+  let store: Store;
+
+  beforeAll(async () => {
+    store = await openStore({ url: DATABASE_URL, schema: `cw_test_qa_${randomBytes(4).toString('hex')}` });
+    await store.migrate();
+  });
+
+  afterAll(async () => {
+    await store?.dropSchema();
+    await store?.close();
+  });
+
+  it('saves questions per walkthrough and lists them in order', async () => {
+    const base = { scopeKind: 'endpoint', scopeRef: 'POST /x', stepHash: 'h2', model: 'm' };
+    const first = await store.saveQuestion({ ...base, stepId: 's2', question: 'Why?', answer: { answer: 'Because `a`.', references: [{ file: 'a.ts', line: 3, role: 'callee' }], warnings: [] } });
+    await store.saveQuestion({ ...base, stepId: 's1', question: 'How?', answer: { answer: 'Like so.', references: [], warnings: ['w'] } });
+    await store.saveQuestion({ ...base, scopeRef: 'GET /y', stepId: 's1', question: 'Other?', answer: { answer: '-', references: [], warnings: [] } });
+    expect(first).toMatchObject({ id: expect.any(Number), stepId: 's2', createdAt: expect.any(Date) });
+    expect((await store.listQuestions('endpoint', 'POST /x')).map((q) => `${q.stepId} ${q.question} ${q.answer.warnings.length}`)).toEqual(['s2 Why? 0', 's1 How? 1']);
+  });
+});

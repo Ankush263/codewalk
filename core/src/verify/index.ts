@@ -1,1 +1,1 @@
-export { buildVocabulary, codeSpans, identifiers, verifyFnWalkthrough, type DroppedStep, type VerifyResult } from './verify.js';
+export { buildVocabulary, checkAnswer, codeSpans, fnVerifyFacts, identifiers, verifyFnWalkthrough, vocabularyOf, type DroppedStep, type VerifyFacts, type VerifyResult } from './verify.js';

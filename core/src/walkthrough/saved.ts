@@ -270,3 +270,29 @@ export function traceNotes(o: TraceOverview): string[] {
     ...o.warnings.map((w) => `Warning: ${w}`),
   ];
 }
+
+/** The scope's overview as plain lines (file, endpoint, component or trace facts); none for `walk fn`. */
+export function walkthroughNotes(saved: SavedWalkthrough): string[] {
+  if (saved.overview) return overviewNotes(saved.overview);
+  if (saved.endpoint) return endpointNotes(saved.endpoint);
+  if (saved.component) return componentNotes(saved.component);
+  if (saved.trace) return traceNotes(saved.trace);
+  return [];
+}
+
+/** Each step's saved hash and the time its section was explained, by flattened step id ("<symbol>/<id>" in a file walkthrough). */
+export function explainedSteps(saved: SavedWalkthrough): Map<string, { hash: string; generatedAt: string }> {
+  const steps = new Map<string, { hash: string; generatedAt: string }>();
+  for (const section of saved.sections) {
+    for (const [id, hash] of Object.entries(section.stepHashes)) {
+      steps.set(saved.scopeKind === 'file' ? `${section.block.symbol ?? 'block'}/${id}` : id, { hash, generatedAt: section.generatedAt });
+    }
+  }
+  return steps;
+}
+
+/** True when the step's lines or its explanation changed after the question was answered. */
+export function questionOutdated(steps: Map<string, { hash: string; generatedAt: string }>, q: { stepId: string; stepHash: string; createdAt: Date }): boolean {
+  const step = steps.get(q.stepId);
+  return !step || step.hash !== q.stepHash || q.createdAt.getTime() < Date.parse(step.generatedAt);
+}

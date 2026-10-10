@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { InvalidArgumentError } from 'commander';
 import {
   ConfigError,
   DatabaseUnreachableError,
@@ -74,6 +75,13 @@ export function loadCodewalkEnv(): void {
   if (envFile && existsSync(envFile)) process.loadEnvFile(envFile);
 }
 
+/** The built web app in this codewalk checkout (web/dist), or null when it hasn't been built. */
+export function findWebRoot(): string | null {
+  const root = codewalkRoot();
+  const dir = root && join(root, 'web', 'dist');
+  return dir && existsSync(join(dir, 'index.html')) ? dir : null;
+}
+
 /** The codewalk checkout: the nearest ancestor of this module with docker-compose.yml. */
 function codewalkRoot(): string | null {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -117,4 +125,11 @@ export function reportError(err: unknown, io: IO): number {
     return 1;
   }
   throw err;
+}
+
+/** commander parser for --port: 0 (any free port) to 65535. */
+export function parsePort(value: string): number {
+  const n = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isInteger(n) || n > 65535) throw new InvalidArgumentError('must be a port number from 0 to 65535');
+  return n;
 }

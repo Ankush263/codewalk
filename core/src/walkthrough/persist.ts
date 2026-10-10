@@ -30,11 +30,24 @@ export function codeReader(repoRoot: string): (file: string) => string[] {
 /** Saves to Postgres and writes the JSON + Markdown mirror. Returns the mirror paths, repo-relative. */
 export async function persistWalkthrough(store: Store, repoRoot: string, saved: SavedWalkthrough): Promise<{ json: string; markdown: string }> {
   await store.saveWalkthrough({ scopeKind: saved.scopeKind, scopeRef: saved.scopeRef, contentHash: contentHashOf(saved.sections), content: saved });
+  return writeMirror(store, repoRoot, saved);
+}
+
+/**
+ * Rewrites the JSON + Markdown mirror of the walkthrough currently stored for a scope (e.g. after a question
+ * was saved). Never writes the walkthrough itself, so it can't undo a regeneration that finished meanwhile.
+ */
+export async function refreshMirror(store: Store, repoRoot: string, kind: ScopeKind, ref: string): Promise<void> {
+  const saved = await loadSavedWalkthrough(store, kind, ref);
+  if (saved) await writeMirror(store, repoRoot, saved);
+}
+
+async function writeMirror(store: Store, repoRoot: string, saved: SavedWalkthrough): Promise<{ json: string; markdown: string }> {
   mkdirSync(join(repoRoot, WALKTHROUGHS_DIR), { recursive: true });
   const base = join(WALKTHROUGHS_DIR, walkthroughSlug(saved.scopeKind, saved.scopeRef));
   const paths = { json: `${base}.json`, markdown: `${base}.md` };
   writeFileSync(join(repoRoot, paths.json), `${JSON.stringify(saved, null, 2)}\n`);
-  writeFileSync(join(repoRoot, paths.markdown), renderMarkdown(saved, codeReader(repoRoot)));
+  writeFileSync(join(repoRoot, paths.markdown), renderMarkdown(saved, codeReader(repoRoot), await store.listQuestions(saved.scopeKind, saved.scopeRef)));
   return paths;
 }
 

@@ -1,4 +1,4 @@
-import { checkWalkthrough, currentChainHash, currentStructureHash, currentTraceHash, filesOf, indexRepo, listSavedWalkthroughs, loadCurrentSource } from '@codewalk/core';
+import { indexRepo, walkthroughStatuses } from '@codewalk/core';
 import { formatList, type ListRow } from '../ui/format.js';
 import { connectStore, loadRepo, type IO } from './shared.js';
 
@@ -18,24 +18,7 @@ export async function runList(cwd: string, options: ListOptions, io: IO): Promis
     await store.migrate();
     // Blocks are found again by symbol name, so the index must match the code on disk.
     await indexRepo(repo.repoRoot, repo.config, store);
-    const entries = await listSavedWalkthroughs(store);
-    const source = await loadCurrentSource(store, repo.repoRoot, entries.flatMap((e) => filesOf(e.saved)));
-    const chains = new Map<string, string | null>();
-    for (const { saved } of entries) {
-      if (saved.scopeKind === 'endpoint') chains.set(saved.scopeRef, await currentChainHash(store, saved.scopeRef));
-      if (saved.scopeKind === 'component') {
-        chains.set(saved.scopeRef, await currentStructureHash(store, repo.repoRoot, saved.scopeRef, saved.sections[0]?.depth ?? 2));
-      }
-      if (saved.scopeKind === 'trace') {
-        chains.set(saved.scopeRef, await currentTraceHash(store, repo.repoRoot, saved.scopeRef, saved.sections[0]?.depth ?? 3));
-      }
-    }
-    rows = entries.map(({ saved, savedAt }) => ({
-      scopeKind: saved.scopeKind,
-      scopeRef: saved.scopeRef,
-      savedAt,
-      status: checkWalkthrough(saved, source, (ref) => chains.get(ref)),
-    }));
+    rows = (await walkthroughStatuses(store, repo.repoRoot)).map(({ saved, savedAt, status }) => ({ scopeKind: saved.scopeKind, scopeRef: saved.scopeRef, savedAt, status }));
   } finally {
     await store.close();
   }

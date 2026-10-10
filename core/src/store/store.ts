@@ -16,6 +16,8 @@ import type {
   IndexChanges,
   IndexStats,
   MiddlewareRecord,
+  QuestionFact,
+  QuestionRecord,
   ReactFactRecord,
   RouteRecord,
   RouterCallRecord,
@@ -710,6 +712,24 @@ export class Store {
     const { rows } = await this.pool.query<WalkthroughRecord>(`${SELECT_WALKTHROUGH} ORDER BY scope_kind, scope_ref`);
     return rows;
   }
+  async saveQuestion(q: QuestionFact): Promise<QuestionRecord> {
+    const { rows } = await this.pool.query<QuestionRow>(
+      `INSERT INTO walkthrough_questions (scope_kind, scope_ref, step_id, question, answer, step_hash, model)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7) RETURNING ${QUESTION_COLUMNS}`,
+      [q.scopeKind, q.scopeRef, q.stepId, q.question, JSON.stringify(q.answer), q.stepHash, q.model],
+    );
+    return toQuestionRecord(rows[0]);
+  }
+
+  /** Questions on one walkthrough, oldest first. */
+  async listQuestions(scopeKind: string, scopeRef: string): Promise<QuestionRecord[]> {
+    const { rows } = await this.pool.query<QuestionRow>(
+      `SELECT ${QUESTION_COLUMNS} FROM walkthrough_questions WHERE scope_kind = $1 AND scope_ref = $2 ORDER BY id`,
+      [scopeKind, scopeRef],
+    );
+    return rows.map(toQuestionRecord);
+  }
+
 }
 
 const SELECT_SYMBOL = `SELECT s.id, f.path AS file, s.name, s.kind, s.start_line, s.end_line, s.exported, s.signature
@@ -794,6 +814,27 @@ function toApiCallWithCaller(r: ApiCallRow): ApiCallWithCaller {
   return {
     id: Number(r.id), symbolId: Number(r.symbol_id), method: r.method, urlPattern: r.url_pattern, urlText: r.url_text, line: r.line,
     caller: optionalSymbol(r)!,
+  };
+}
+
+const QUESTION_COLUMNS = 'id, scope_kind, scope_ref, step_id, question, answer, step_hash, model, created_at';
+
+interface QuestionRow {
+  id: string;
+  scope_kind: string;
+  scope_ref: string;
+  step_id: string;
+  question: string;
+  answer: QuestionRecord['answer'];
+  step_hash: string;
+  model: string;
+  created_at: Date;
+}
+
+function toQuestionRecord(r: QuestionRow): QuestionRecord {
+  return {
+    id: Number(r.id), scopeKind: r.scope_kind, scopeRef: r.scope_ref, stepId: r.step_id, question: r.question, answer: r.answer,
+    stepHash: r.step_hash, model: r.model, createdAt: r.created_at,
   };
 }
 

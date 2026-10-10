@@ -8,9 +8,9 @@ export interface LlmMessage {
   content: string;
 }
 
-/** A model that returns the raw JSON text of a walkthrough. Tests use recorded responses. */
+/** A model that returns raw JSON text matching `schema` (the walkthrough schema when omitted). Tests use recorded responses. */
 export interface LlmProvider {
-  generate(request: { system: string; messages: LlmMessage[] }): Promise<string>;
+  generate(request: { system: string; messages: LlmMessage[]; schema?: z.ZodType }): Promise<string>;
 }
 
 export class LlmOutputError extends Error {
@@ -36,33 +36,39 @@ export async function generateFnWalkthrough(provider: LlmProvider, ctx: FnContex
   return generateWalkthrough(provider, { system: FN_SYSTEM_PROMPT, prompt: renderFnPrompt(ctx, options) });
 }
 
-/** One walkthrough request: the response must match the §8.2 schema; invalid output is re-requested up to twice. */
-export async function generateWalkthrough(provider: LlmProvider, request: { system: string; prompt: string }): Promise<GenerateResult> {
+/** One structured request: the response must match `schema`; invalid output is re-requested up to twice. */
+export async function generateStructured<S extends z.ZodType>(
+  provider: LlmProvider,
+  request: { system: string; prompt: string; schema: S; name?: string },
+): Promise<{ value: z.infer<S>; attempts: number }> {
   const messages: LlmMessage[] = [{ role: 'user', content: request.prompt }];
   let lastProblem = '';
-
   for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
-    const raw = await provider.generate({ system: request.system, messages });
-    const problem = validate(raw);
-    if (typeof problem !== 'string') return { walkthrough: problem, attempts: attempt };
-
-    lastProblem = problem;
+    const raw = await provider.generate({ system: request.system, messages, schema: request.schema });
+    const result = validate(raw, request.schema);
+    if (result.ok) return { value: result.value, attempts: attempt };
+    lastProblem = result.problem;
     messages.push(
       { role: 'assistant', content: raw },
-      { role: 'user', content: `That response is not valid:\n${problem}\nReturn the complete corrected walkthrough as JSON.` },
+      { role: 'user', content: `That response is not valid:\n${result.problem}\nReturn the complete corrected ${request.name ?? 'response'} as JSON.` },
     );
   }
   throw new LlmOutputError(`The model returned invalid output ${MAX_RETRIES + 1} times. Last problem:\n${lastProblem}`, MAX_RETRIES + 1);
 }
 
-/** The parsed walkthrough, or a description of what is wrong with `raw`. */
-function validate(raw: string): Walkthrough | string {
+/** One walkthrough request (CLAUDE.md §8.2). */
+export async function generateWalkthrough(provider: LlmProvider, request: { system: string; prompt: string }): Promise<GenerateResult> {
+  const { value, attempts } = await generateStructured(provider, { ...request, schema: walkthroughSchema, name: 'walkthrough' });
+  return { walkthrough: value, attempts };
+}
+
+function validate<S extends z.ZodType>(raw: string, schema: S): { ok: true; value: z.infer<S> } | { ok: false; problem: string } {
   let json: unknown;
   try {
     json = JSON.parse(raw);
   } catch (err) {
-    return `Not valid JSON: ${(err as Error).message}`;
+    return { ok: false, problem: `Not valid JSON: ${(err as Error).message}` };
   }
-  const parsed = walkthroughSchema.safeParse(json);
-  return parsed.success ? parsed.data : z.prettifyError(parsed.error);
+  const parsed = schema.safeParse(json);
+  return parsed.success ? { ok: true, value: parsed.data } : { ok: false, problem: z.prettifyError(parsed.error) };
 }

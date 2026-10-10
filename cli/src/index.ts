@@ -6,9 +6,10 @@ import { runEndpoint, type EndpointOptions } from './commands/endpoint.js';
 import { runTrace, type TraceOptions } from './commands/trace.js';
 import { runFn, type FnOptions } from './commands/fn.js';
 import { runList } from './commands/list.js';
+import { runServe, type ServeOptions } from './commands/serve.js';
 import { runIndex } from './commands/index.js';
 import { runInit } from './commands/init.js';
-import { loadCodewalkEnv } from './commands/shared.js';
+import { loadCodewalkEnv, parsePort } from './commands/shared.js';
 
 loadCodewalkEnv();
 
@@ -92,6 +93,14 @@ program
   .addOption(new Option('--out <format>', 'output format').choices(['terminal', 'json', 'md']).default('terminal'))
   .action(async (route: string, opts: TraceOptions) => {
     process.exitCode = await runTrace(process.cwd(), route, opts, io);
+  });
+
+program
+  .command('serve')
+  .description('open the local web UI for saved walkthroughs (127.0.0.1 only)')
+  .option('--port <n>', 'port to listen on', parsePort, 4321)
+  .action(async (opts: ServeOptions) => {
+    process.exitCode = await runServe(process.cwd(), opts, io);
   });
 
 program

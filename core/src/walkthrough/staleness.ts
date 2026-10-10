@@ -2,7 +2,7 @@ import { walkableSymbols } from '../context/order.js';
 import type { Store } from '../store/index.js';
 import type { SymbolRecord } from '../store/types.js';
 import type { WalkthroughStep } from './fn.js';
-import { hashLines, readLines, type BlockRef, type SavedWalkthrough, type Section } from './saved.js';
+import { hashLines, readLines, type BlockRef, type SavedWalkthrough, type ScopeKind, type Section } from './saved.js';
 
 // Staleness (CLAUDE.md §9). A section is fresh when its block's text is unchanged, wherever it now
 // sits. When the block changed, each step stays fresh if its exact lines still appear in the block,
@@ -185,4 +185,19 @@ function findStep(step: WalkthroughStep, hash: string | undefined, lines: string
     }
   }
   return best === null ? stepAt(step, false, step.code_ref.start) : stepAt(step, true, best);
+}
+
+/** One line describing why a walkthrough is stale, e.g. "1/9 steps stale · changed: insertConsent". */
+export function describeStaleness(kind: ScopeKind, s: WalkthroughStatus): string {
+  const label = (x: WalkthroughStatus['sections'][number]) => x.symbol ?? `${x.file} lines`;
+  const changed = s.sections.filter((x) => x.state === 'changed').flatMap((x) => (x.changedBlocks?.length ? x.changedBlocks : [label(x)]));
+  const removed = s.sections.filter((x) => x.state === 'missing').map(label);
+  const parts = [`${s.staleSteps}/${s.totalSteps} steps stale`];
+  if (s.fileRemoved) parts.push('file removed');
+  if (s.routeRemoved) parts.push(kind === 'component' ? 'component removed' : kind === 'trace' ? 'trace removed' : 'route removed');
+  if (s.chainChanged) parts.push(kind === 'component' ? 'structure changed' : kind === 'trace' ? 'trace changed' : 'middleware chain changed');
+  if (changed.length) parts.push(`changed: ${changed.join(', ')}`);
+  if (removed.length) parts.push(`removed: ${removed.join(', ')}`);
+  if (s.uncovered.length) parts.push(`not covered: ${s.uncovered.join(', ')}`);
+  return parts.join(' · ');
 }
