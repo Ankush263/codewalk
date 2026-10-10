@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { runner } from 'node-pg-migrate';
+import { handlerKey, handlerLabel, handlerNote, stitchRoutes } from '../routes/stitch.js';
 import type {
   CallEdge,
   CalleeRecord,
@@ -10,6 +11,10 @@ import type {
   ImportRecord,
   IndexChanges,
   IndexStats,
+  MiddlewareRecord,
+  RouteRecord,
+  RouterCallRecord,
+  SideEffectRecord,
   SymbolKind,
   SymbolRecord,
   WalkthroughRecord,
@@ -137,6 +142,24 @@ export class Store {
     return rows.map((r) => r.path);
   }
 
+  /**
+   * Files (other than `paths`) whose Express registrations pass a function declared in `paths`, e.g.
+   * `router.use(requireAuth)`. Those keys hold line numbers, so the registrations must be re-extracted;
+   * a barrel re-export means the router file isn't a direct importer.
+   */
+  async getRouterCallFiles(paths: string[]): Promise<string[]> {
+    const { rows } = await this.pool.query<{ path: string }>(
+      `SELECT DISTINCT f.path
+       FROM router_calls r JOIN files f ON f.id = r.file_id
+       CROSS JOIN LATERAL jsonb_array_elements(r.handlers) AS h
+       WHERE (h->'key'->>'file' = ANY($1::text[]) OR h->'factory'->>'file' = ANY($1::text[]))
+         AND NOT f.path = ANY($1::text[])
+       ORDER BY f.path`,
+      [paths],
+    );
+    return rows.map((r) => r.path);
+  }
+
   /** Row counts for `walk index` summaries. */
   async getIndexStats(): Promise<IndexStats> {
     const { rows } = await this.pool.query<{ files: string; symbols: string; calls: string; unresolved: string }>(
@@ -166,6 +189,16 @@ export class Store {
         `DELETE FROM calls WHERE caller_symbol_id IN (
            SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ANY($1::text[]))`,
         [callRefreshes.map((r) => r.path)],
+      );
+      const refreshPaths = callRefreshes.map((r) => r.path);
+      await client.query(
+        'DELETE FROM router_calls WHERE file_id IN (SELECT id FROM files WHERE path = ANY($1::text[]))',
+        [refreshPaths],
+      );
+      await client.query(
+        `DELETE FROM side_effects WHERE symbol_id IN (
+           SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ANY($1::text[]))`,
+        [refreshPaths],
       );
       await client.query('DELETE FROM files WHERE path = ANY($1::text[])', [
         [...files.map((f) => f.path), ...removedPaths],
@@ -216,6 +249,39 @@ export class Store {
          JOIN files f ON f.path = x.file`,
         [JSON.stringify(imports)],
       );
+
+      const factSources = [...files, ...callRefreshes];
+      const routerCalls = factSources.flatMap((f) =>
+        (f.routerCalls ?? []).map((r) => ({
+          file: f.path, receiverKey: r.receiver?.key ?? null, receiverKind: r.receiver?.kind ?? null, receiverText: r.receiverText,
+          callKind: r.callKind, method: r.method, path: r.path, pathText: r.pathText, line: r.line, endLine: r.endLine,
+          orderIdx: r.orderIdx, handlers: r.handlers,
+        })),
+      );
+      await client.query(
+        `INSERT INTO router_calls (file_id, receiver_key, receiver_kind, receiver_text, call_kind, method, path, path_text,
+                                   line, end_line, order_idx, handlers)
+         SELECT f.id, x."receiverKey", x."receiverKind", x."receiverText", x."callKind", x.method, x.path, x."pathText",
+                x.line, x."endLine", x."orderIdx", x.handlers
+         FROM jsonb_to_recordset($1::jsonb) AS x(file text, "receiverKey" text, "receiverKind" text, "receiverText" text,
+                                                 "callKind" text, method text, path text, "pathText" text, line int,
+                                                 "endLine" int, "orderIdx" int, handlers jsonb)
+         JOIN files f ON f.path = x.file`,
+        [JSON.stringify(routerCalls)],
+      );
+
+      const sideEffects = factSources.flatMap((f) => (f.sideEffects ?? []).map((e) => ({ ...e, file: f.path })));
+      const insertedEffects = await client.query(
+        `INSERT INTO side_effects (symbol_id, kind, detail, line)
+         SELECT s.id, x.kind, x.detail, x.line
+         FROM jsonb_to_recordset($1::jsonb) AS x(file text, symbol jsonb, kind text, detail text, line int)
+         JOIN files f ON f.path = x.file
+         JOIN symbols s ON s.file_id = f.id AND s.name = x.symbol->>'name' AND s.start_line = (x.symbol->>'startLine')::int`,
+        [JSON.stringify(sideEffects)],
+      );
+      assertCount('side_effects', insertedEffects.rowCount, sideEffects.length);
+
+      await this.rebuildRoutes(client);
 
       await client.query('COMMIT');
     } catch (err) {
@@ -354,6 +420,101 @@ export class Store {
     return rows.map((r) => ({ callerId: Number(r.caller_symbol_id), calleeId: Number(r.callee_symbol_id) }));
   }
 
+  /** Re-stitches routes and middleware from every stored registration (routes/stitch.ts). */
+  private async rebuildRoutes(client: pg.PoolClient): Promise<void> {
+    const { rows } = await client.query<RouterCallRow>(
+      `SELECT f.path AS file, r.receiver_key, r.receiver_kind, r.receiver_text, r.call_kind, r.method, r.path, r.path_text,
+              r.line, r.end_line, r.order_idx, r.handlers
+       FROM router_calls r JOIN files f ON f.id = r.file_id
+       ORDER BY f.path, r.order_idx`,
+    );
+    const { routes, warnings } = stitchRoutes(rows.map(toRouterCallRecord));
+
+    await client.query('DELETE FROM routes'); // cascades to middleware
+    await client.query('DELETE FROM route_warnings');
+    await client.query('INSERT INTO route_warnings (message) SELECT unnest($1::text[])', [warnings]);
+    if (routes.length === 0) return;
+
+    const ids = (
+      await client.query<{ id: string }>(`SELECT nextval(pg_get_serial_sequence('routes', 'id')) AS id FROM generate_series(1, $1)`, [routes.length])
+    ).rows.map((r) => r.id);
+
+    await client.query(
+      `INSERT INTO routes (id, method, full_path, handler_symbol_id, handler_label, mount_chain, file, line, end_line, warnings)
+       SELECT x.id, x.method, x."fullPath", s.id, x."handlerLabel", x."mountChain", x.file, x.line, x."endLine", x.warnings
+       FROM jsonb_to_recordset($1::jsonb) AS x(id bigint, method text, "fullPath" text, "handlerLabel" text, "mountChain" jsonb,
+                                               file text, line int, "endLine" int, warnings jsonb, key jsonb)
+       LEFT JOIN files kf ON kf.path = x.key->>'file'
+       LEFT JOIN symbols s ON s.file_id = kf.id AND s.name = x.key->>'name' AND s.start_line = (x.key->>'startLine')::int`,
+      [
+        JSON.stringify(
+          routes.map((r, i) => ({
+            id: ids[i], method: r.method, fullPath: r.fullPath, handlerLabel: handlerLabel(r.handler), mountChain: r.mountChain,
+            file: r.file, line: r.line, endLine: r.endLine, warnings: r.warnings, key: handlerKey(r.handler),
+          })),
+        ),
+      ],
+    );
+
+    const middleware = routes.flatMap((r, i) =>
+      r.middleware.map((m, orderIdx) => ({
+        routeId: ids[i], orderIdx, phase: m.phase, label: handlerLabel(m.handler), file: m.file, line: m.line, endLine: m.endLine,
+        note: handlerNote(m.handler, m.file, m.line), key: handlerKey(m.handler),
+      })),
+    );
+    await client.query(
+      `INSERT INTO middleware (route_id, order_idx, symbol_id, phase, label, file, line, end_line, unresolved_note)
+       SELECT x."routeId", x."orderIdx", s.id, x.phase, x.label, x.file, x.line, x."endLine", x.note
+       FROM jsonb_to_recordset($1::jsonb) AS x("routeId" bigint, "orderIdx" int, phase text, label text, file text, line int,
+                                               "endLine" int, note text, key jsonb)
+       LEFT JOIN files kf ON kf.path = x.key->>'file'
+       LEFT JOIN symbols s ON s.file_id = kf.id AND s.name = x.key->>'name' AND s.start_line = (x.key->>'startLine')::int`,
+      [JSON.stringify(middleware)],
+    );
+  }
+
+  /** Every stitched route, with its handler symbol when it is a repo function. */
+  async listRoutes(): Promise<RouteRecord[]> {
+    const { rows } = await this.pool.query<RouteRow>(
+      `SELECT r.id, r.method, r.full_path, r.handler_label, r.mount_chain, r.file, r.line, r.end_line, r.warnings, ${PREFIXED_SYMBOL}
+       FROM routes r LEFT JOIN symbols s ON s.id = r.handler_symbol_id LEFT JOIN files sf ON sf.id = s.file_id
+       ORDER BY r.full_path, r.method, r.id`,
+    );
+    return rows.map((r) => ({
+      id: Number(r.id), method: r.method, fullPath: r.full_path, handler: optionalSymbol(r), handlerLabel: r.handler_label,
+      file: r.file, line: r.line, endLine: r.end_line, mountChain: r.mount_chain, warnings: r.warnings,
+    }));
+  }
+
+  /** A route's middleware in execution order; error handlers (phase "error") come last. */
+  async getMiddlewareChain(routeId: number): Promise<MiddlewareRecord[]> {
+    const { rows } = await this.pool.query<MiddlewareRow>(
+      `SELECT m.order_idx, m.phase, m.label, m.file, m.line, m.end_line, m.unresolved_note, ${PREFIXED_SYMBOL}
+       FROM middleware m LEFT JOIN symbols s ON s.id = m.symbol_id LEFT JOIN files sf ON sf.id = s.file_id
+       WHERE m.route_id = $1 ORDER BY m.order_idx`,
+      [routeId],
+    );
+    return rows.map((r) => ({
+      orderIdx: r.order_idx, phase: r.phase, label: r.label, symbol: optionalSymbol(r), file: r.file, line: r.line,
+      endLine: r.end_line, unresolvedNote: r.unresolved_note,
+    }));
+  }
+
+  /** Side effects of the given symbols, by symbol then line. One query. */
+  async getSideEffects(symbolIds: number[]): Promise<SideEffectRecord[]> {
+    const { rows } = await this.pool.query<{ symbol_id: string; kind: SideEffectRecord['kind']; detail: string; line: number }>(
+      'SELECT symbol_id, kind, detail, line FROM side_effects WHERE symbol_id = ANY($1::bigint[]) ORDER BY symbol_id, line, id',
+      [symbolIds],
+    );
+    return rows.map((r) => ({ symbolId: Number(r.symbol_id), kind: r.kind, detail: r.detail, line: r.line }));
+  }
+
+  /** Registrations the last index pass couldn't place in the route tree. */
+  async getRouteWarnings(): Promise<string[]> {
+    const { rows } = await this.pool.query<{ message: string }>('SELECT message FROM route_warnings ORDER BY message');
+    return rows.map((r) => r.message);
+  }
+
   /**
    * Inserts or replaces the saved walkthrough of one scope. Saving identical content (e.g. a cache hit)
    * is a no-op, so created_at stays the time the content last changed.
@@ -388,6 +549,74 @@ const SELECT_SYMBOL = `SELECT s.id, f.path AS file, s.name, s.kind, s.start_line
 
 const SELECT_WALKTHROUGH = `SELECT scope_kind AS "scopeKind", scope_ref AS "scopeRef", content_hash AS "contentHash",
   content, created_at AS "createdAt" FROM walkthroughs`;
+
+const PREFIXED_SYMBOL = `s.id AS s_id, sf.path AS s_file, s.name AS s_name, s.kind AS s_kind, s.start_line AS s_start_line,
+  s.end_line AS s_end_line, s.exported AS s_exported, s.signature AS s_signature`;
+
+interface PrefixedSymbolRow {
+  s_id: string | null;
+  s_file: string | null;
+  s_name: string | null;
+  s_kind: SymbolKind | null;
+  s_start_line: number | null;
+  s_end_line: number | null;
+  s_exported: boolean | null;
+  s_signature: string | null;
+}
+
+interface RouteRow extends PrefixedSymbolRow {
+  id: string;
+  method: string;
+  full_path: string;
+  handler_label: string;
+  mount_chain: RouteRecord['mountChain'];
+  file: string;
+  line: number;
+  end_line: number;
+  warnings: string[];
+}
+
+interface MiddlewareRow extends PrefixedSymbolRow {
+  order_idx: number;
+  phase: MiddlewareRecord['phase'];
+  label: string;
+  file: string;
+  line: number;
+  end_line: number;
+  unresolved_note: string | null;
+}
+
+interface RouterCallRow {
+  file: string;
+  receiver_key: string | null;
+  receiver_kind: 'app' | 'router' | null;
+  receiver_text: string;
+  call_kind: 'use' | 'route';
+  method: string | null;
+  path: string | null;
+  path_text: string | null;
+  line: number;
+  end_line: number;
+  order_idx: number;
+  handlers: RouterCallRecord['handlers'];
+}
+
+function optionalSymbol(r: PrefixedSymbolRow): SymbolRecord | null {
+  if (r.s_id === null) return null;
+  return toSymbolRecord({
+    id: r.s_id, file: r.s_file!, name: r.s_name!, kind: r.s_kind!, start_line: r.s_start_line!, end_line: r.s_end_line!,
+    exported: r.s_exported!, signature: r.s_signature,
+  });
+}
+
+function toRouterCallRecord(r: RouterCallRow): RouterCallRecord {
+  return {
+    file: r.file,
+    receiver: r.receiver_key && r.receiver_kind ? { key: r.receiver_key, kind: r.receiver_kind } : null,
+    receiverText: r.receiver_text, callKind: r.call_kind, method: r.method, path: r.path, pathText: r.path_text,
+    line: r.line, endLine: r.end_line, orderIdx: r.order_idx, handlers: r.handlers,
+  };
+}
 
 interface SymbolRow {
   id: string; // BIGINT arrives as a string from node-postgres

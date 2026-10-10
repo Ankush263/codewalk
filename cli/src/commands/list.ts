@@ -1,4 +1,4 @@
-import { checkWalkthrough, filesOf, indexRepo, listSavedWalkthroughs, loadCurrentSource } from '@codewalk/core';
+import { checkWalkthrough, currentChainHash, filesOf, indexRepo, listSavedWalkthroughs, loadCurrentSource } from '@codewalk/core';
 import { formatList, type ListRow } from '../ui/format.js';
 import { connectStore, loadRepo, type IO } from './shared.js';
 
@@ -20,11 +20,15 @@ export async function runList(cwd: string, options: ListOptions, io: IO): Promis
     await indexRepo(repo.repoRoot, repo.config, store);
     const entries = await listSavedWalkthroughs(store);
     const source = await loadCurrentSource(store, repo.repoRoot, entries.flatMap((e) => filesOf(e.saved)));
+    const chains = new Map<string, string | null>();
+    for (const { saved } of entries) {
+      if (saved.scopeKind === 'endpoint') chains.set(saved.scopeRef, await currentChainHash(store, saved.scopeRef));
+    }
     rows = entries.map(({ saved, savedAt }) => ({
       scopeKind: saved.scopeKind,
       scopeRef: saved.scopeRef,
       savedAt,
-      status: checkWalkthrough(saved, source),
+      status: checkWalkthrough(saved, source, (ref) => chains.get(ref)),
     }));
   } finally {
     await store.close();

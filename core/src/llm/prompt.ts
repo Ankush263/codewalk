@@ -102,7 +102,7 @@ export function renderFnPrompt(ctx: FnContext, options: FnPromptOptions = {}): s
   return out.join('\n\n');
 }
 
-function describe(s: SymbolRecord): string {
+export function describe(s: SymbolRecord): string {
   const sig = s.signature ? ` — \`${s.signature}\`` : '';
   return `${s.kind} \`${s.name}\` (${s.file}:${s.startLine}-${s.endLine})${sig}`;
 }

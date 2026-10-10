@@ -31,6 +31,17 @@ export interface CallFact {
   resolved: boolean;
 }
 
+export type SideEffectKind = 'db_read' | 'db_write' | 'redis' | 'http_out' | 'queue' | 'throws';
+
+/** Something a symbol does beyond computing a value, found statically (CLAUDE.md §6.3 item 4). */
+export interface SideEffectFact {
+  symbol: Pick<SymbolKey, 'name' | 'startLine'>;
+  kind: SideEffectKind;
+  /** e.g. "INSERT consents", "GET session:${token}", "ConflictError (409)". */
+  detail: string;
+  line: number;
+}
+
 export interface ImportFact {
   importedPath: string;
   /** Repo-relative file the import resolves to; null for packages. */
@@ -38,6 +49,39 @@ export interface ImportFact {
   importedNames: string[];
   packageName: string | null;
   packageVersion: string | null;
+}
+
+/** One handler argument of an Express registration, classified by what it refers to. */
+export type HandlerArg =
+  /** A repo function passed by name, e.g. `requireAuth`. arity = parameter count (4 = error handler). */
+  | { kind: 'symbol'; key: SymbolKey; arity: number; text: string }
+  /** An inline function, registered as a `route_handler` symbol. */
+  | { kind: 'inline'; key: SymbolKey; arity: number; text: string }
+  /** A call to a repo function that returns the middleware, e.g. `validate(schema)`; key is the returned function when identifiable. */
+  | { kind: 'factory'; factory: SymbolKey; key: SymbolKey | null; arity: number | null; text: string }
+  /** Another app or router mounted here; receiverKey is "<file>#<variable>". */
+  | { kind: 'router'; receiverKey: string; text: string }
+  /** Middleware from a package, e.g. `express.json()`. */
+  | { kind: 'package'; package: string; text: string }
+  | { kind: 'unresolved'; text: string };
+
+/** An Express registration: app.use / router.<verb> / router.route(p).<verb>. */
+export interface RouterCallFact {
+  /** The app or router registered on: "<file>#<variable>"; null for an Express value we can't place (e.g. a parameter). */
+  receiver: { key: string; kind: 'app' | 'router' } | null;
+  receiverText: string;
+  callKind: 'use' | 'route';
+  /** GET, POST, ..., ALL for routes; null for use. */
+  method: string | null;
+  /** The path literal; null when there is no path argument or it isn't a literal (see pathText). */
+  path: string | null;
+  /** Source text of a non-literal path argument. */
+  pathText: string | null;
+  line: number;
+  endLine: number;
+  /** Registration order within the file. */
+  orderIdx: number;
+  handlers: HandlerArg[];
 }
 
 /** Everything the indexer extracted from one file. Replaces all prior facts for that file. */
@@ -48,13 +92,16 @@ export interface FileFacts {
   symbols: SymbolFact[];
   calls: CallFact[];
   imports: ImportFact[];
+  /** Express registrations in this file (Phase 3). */
+  routerCalls?: RouterCallFact[];
+  sideEffects?: SideEffectFact[];
 }
 
 export interface IndexChanges {
   files?: FileFacts[];
   removedPaths?: string[];
   /** Unchanged files whose outgoing calls are rebuilt (their symbols are kept). */
-  callRefreshes?: { path: string; calls: CallFact[] }[];
+  callRefreshes?: { path: string; calls: CallFact[]; routerCalls?: RouterCallFact[]; sideEffects?: SideEffectFact[] }[];
 }
 
 export interface IndexStats {
@@ -124,4 +171,54 @@ export interface WalkthroughRecord {
   content: unknown;
   /** When it was last saved. */
   createdAt: Date;
+}
+
+export type MiddlewarePhase = 'app' | 'router' | 'route' | 'error';
+
+/** A RouterCallFact with the file it was found in, as stitching reads it back. */
+export interface RouterCallRecord extends RouterCallFact {
+  file: string;
+}
+
+/** One `use(prefix, router)` on the way from an app to a route. */
+export interface MountFact {
+  file: string;
+  line: number;
+  endLine: number;
+  prefix: string;
+}
+
+export interface RouteRecord {
+  id: number;
+  method: string;
+  fullPath: string;
+  /** Null when the handler is a package function or couldn't be resolved. */
+  handler: SymbolRecord | null;
+  handlerLabel: string;
+  /** The route registration call. */
+  file: string;
+  line: number;
+  endLine: number;
+  mountChain: MountFact[];
+  warnings: string[];
+}
+
+export interface MiddlewareRecord {
+  orderIdx: number;
+  phase: MiddlewarePhase;
+  label: string;
+  /** Null for package middleware and unresolved values. */
+  symbol: SymbolRecord | null;
+  /** The registration call. */
+  file: string;
+  line: number;
+  endLine: number;
+  unresolvedNote: string | null;
+}
+
+export interface SideEffectRecord {
+  symbolId: number;
+  kind: SideEffectKind;
+  detail: string;
+  line: number;
 }

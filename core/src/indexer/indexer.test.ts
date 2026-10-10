@@ -48,6 +48,46 @@ describe('indexRepo on the fixture', () => {
     expect(result.stats.files).toBe(23);
   });
 
+  it('resolves Express mounts into full routes with ordered middleware', async () => {
+    const routes = await store.listRoutes();
+    expect(routes.map((r) => `${r.method} ${r.fullPath}`).sort()).toEqual(['GET /api/patients/:id', 'POST /api/patients/enroll']);
+    const enroll = routes.find((r) => r.method === 'POST')!;
+    expect(enroll).toMatchObject({
+      handlerLabel: 'enrollHandler',
+      handler: { file: 'api/controllers/patientsController.ts', name: 'enrollHandler' },
+      file: 'api/routes/patients.ts',
+      line: 13,
+      mountChain: [
+        { file: 'api/app.ts', line: 10, prefix: '/api' },
+        { file: 'api/routes/index.ts', line: 6, prefix: '/patients' },
+      ],
+    });
+    expect((await store.getMiddlewareChain(enroll.id)).map((m) => `${m.phase}:${m.label}`)).toEqual([
+      'app:express.json()',
+      'router:requireAuth',
+      'route:rateLimit',
+      'route:validate.validateBody',
+      'error:errorHandler',
+    ]);
+  });
+
+  it('tags side effects on the symbols that cause them', async () => {
+    const effects = async (file: string, name: string) =>
+      (await store.getSideEffects([(await symbol(file, name)).id])).map((e) => `${e.kind} ${e.detail}`);
+    expect(await effects('api/middleware/auth.ts', 'requireAuth')).toEqual([
+      'throws UnauthorizedError (401)',
+      'redis GET session:${token}',
+      'throws UnauthorizedError (401)',
+    ]);
+    expect(await effects('api/repositories/patientRepository.ts', 'insertConsent')).toEqual(['db_write INSERT consents']);
+    expect(await effects('api/services/enrollService.ts', 'enrollPatient')).toEqual(expect.arrayContaining([
+      'throws ConflictError (409)',
+      'redis SET patient:${patient.id}',
+      'queue emit patient.enrolled (in-process)',
+      'throws rethrows err',
+    ]));
+  });
+
   it('extracts symbols with kinds, qualified names and export flags', async () => {
     expect(await symbol('api/services/enrollService.ts', 'enrollPatient')).toMatchObject({
       kind: 'function',
@@ -129,5 +169,51 @@ describe('indexRepo on the fixture', () => {
     expect(result.refreshed).toEqual(['api/events/bus.ts']);
     expect(await store.findSymbol('api/events/handlers.ts', 'dispatch')).toEqual([]);
     expect(await callees('api/events/bus.ts', 'registerEventHandlers')).toContainEqual({ text: 'dispatch', target: 'unresolved' });
+  });
+
+  it('rebuilds routes when a router file changes', async () => {
+    const path = join(repo, 'api/routes/patients.ts');
+    writeFileSync(path, readFileSync(path, 'utf8').replace('rateLimit, ', ''));
+    await indexRepo(repo, config, store);
+    const enroll = (await store.listRoutes()).find((r) => r.fullPath === '/api/patients/enroll')!;
+    expect((await store.getMiddlewareChain(enroll.id)).map((m) => m.label)).toEqual([
+      'express.json()',
+      'requireAuth',
+      'validate.validateBody',
+      'errorHandler',
+    ]);
+  });
+});
+
+describe('indexRepo with middleware imported through a barrel file', () => {
+  let repo: string;
+  let config: WalkConfig;
+  let store: Store;
+
+  beforeAll(async () => {
+    repo = mkdtempSync(join(tmpdir(), 'cw-barrel-'));
+    cpSync(FIXTURE, repo, { recursive: true });
+    writeFileSync(join(repo, 'api/middleware/index.ts'), "export { requireAuth } from './auth';\n");
+    const routes = join(repo, 'api/routes/patients.ts');
+    writeFileSync(routes, readFileSync(routes, 'utf8').replace("from '../middleware/auth'", "from '../middleware'"));
+    config = loadConfig(repo);
+    store = await openStore({ url: DATABASE_URL, schema: `cw_test_barrel_${Math.random().toString(16).slice(2, 10)}` });
+    await store.migrate();
+    await indexRepo(repo, config, store);
+  });
+
+  afterAll(async () => {
+    await store?.dropSchema();
+    await store?.close();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('keeps the middleware symbol when the middleware file moves, even though the router imports it indirectly', async () => {
+    const auth = join(repo, 'api/middleware/auth.ts');
+    writeFileSync(auth, `// one\n// two\n${readFileSync(auth, 'utf8')}`);
+    await indexRepo(repo, config, store);
+    const enroll = (await store.listRoutes()).find((r) => r.fullPath === '/api/patients/enroll')!;
+    const requireAuth = (await store.getMiddlewareChain(enroll.id)).find((m) => m.label === 'requireAuth')!;
+    expect(requireAuth.symbol).toMatchObject({ file: 'api/middleware/auth.ts', startLine: 12 });
   });
 });

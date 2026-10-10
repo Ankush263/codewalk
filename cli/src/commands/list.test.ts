@@ -52,7 +52,7 @@ describe('walk list', () => {
   });
 
   it('says how to start when nothing is saved', async () => {
-    expect(await list()).toBe('No saved walkthroughs yet. Run `walk fn` or `walk file` to create one.');
+    expect(await list()).toBe('No saved walkthroughs yet. Run `walk fn`, `walk file` or `walk endpoint` to create one.');
   });
 
   it('shows fresh walkthroughs after generating them', async () => {

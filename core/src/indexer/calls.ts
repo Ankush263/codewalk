@@ -16,9 +16,12 @@ export interface RepoLookup {
   isRepoFile(sourceFile: SourceFile): boolean;
   /** Key of the registered symbol for a declaration or function node, if any. */
   keyFor(node: Node): SymbolKey | null;
+  /** Repo-relative path of a repo file. */
+  pathOf(sourceFile: SourceFile): string;
 }
 
-type Origin = 'package' | 'unknown';
+/** Origin of a value declared outside the repo without an import, e.g. globals like `fetch` or `JSON`. */
+const GLOBAL_ORIGIN = '<global>';
 
 const EVENT_DISPATCH_METHODS = new Set(['emit']);
 // Each hop (identifier -> declaration -> initializer/type -> identifier) costs ~2 levels.
@@ -51,7 +54,7 @@ export function collectCalls(sourceFile: SourceFile, byNode: Map<unknown, Regist
 }
 
 /** Innermost registered function-like symbol containing `node`; calls in class/type bodies or at module level have none. */
-function enclosingSymbol(node: Node, byNode: Map<unknown, RegisteredSymbol>): RegisteredSymbol | null {
+export function enclosingSymbol(node: Node, byNode: Map<unknown, RegisteredSymbol>): RegisteredSymbol | null {
   for (let n = node.getParent(); n; n = n.getParent()) {
     const sym = byNode.get(n.compilerNode);
     if (sym) return sym.bodyOwner ? sym : null;
@@ -85,7 +88,29 @@ function resolveCallee(expr: Node, repo: RepoLookup): Pick<CallFact, 'callee' | 
   }
 
   // 3. Where the root identifier came from.
-  return originOfExpression(expr, repo, 0) === 'package' ? external : unresolved;
+  return originOfExpression(expr, repo, 0) !== null ? external : unresolved;
+}
+
+/**
+ * The module a value was created from, e.g. "pg" for `client` in `const client = await pool.connect()`
+ * where `pool = new Pool()` imports Pool from "pg"; "events" for "node:events". Null for values
+ * declared in the repo, globals, and anything whose origin can't be traced.
+ */
+export function packageOf(expr: Node, repo: RepoLookup): string | null {
+  const origin = originOfExpression(expr, repo, 0);
+  return origin === null || origin === '' || origin === GLOBAL_ORIGIN ? null : moduleOf(origin);
+}
+
+/** "node:events" -> "events", "@prisma/client/runtime" -> "@prisma/client", "axios/lib" -> "axios". */
+export function moduleOf(specifier: string): string {
+  const bare = specifier.replace(/^node:/, '');
+  const parts = bare.split('/');
+  return bare.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
+
+/** The declaration an expression names, following imports; for `a.b` the declaration of `b`. */
+export function declarationOf(expr: Node): Node | undefined {
+  return firstDeclaration(symbolOf(expr));
 }
 
 function symbolOf(expr: Node): MorphSymbol | undefined {
@@ -99,41 +124,42 @@ function firstDeclaration(sym: MorphSymbol | undefined): Node | undefined {
   return sym?.getDeclarations()[0];
 }
 
-function originOfExpression(expr: Node, repo: RepoLookup, depth: number): Origin {
-  if (depth > MAX_TRACE_DEPTH) return 'unknown';
+/** The import specifier a value comes from (or GLOBAL_ORIGIN); null for repo values and unknown origins. */
+function originOfExpression(expr: Node, repo: RepoLookup, depth: number): string | null {
+  if (depth > MAX_TRACE_DEPTH) return null;
   const root = rootIdentifier(expr);
-  if (!root || !Node.isIdentifier(root)) return 'unknown';
+  if (!root || !Node.isIdentifier(root)) return null;
   const decl = root.getSymbol()?.getDeclarations()[0];
-  if (!decl) return 'unknown';
-  if (!repo.isRepoFile(decl.getSourceFile())) return 'package';
+  if (!decl) return null;
+  if (!repo.isRepoFile(decl.getSourceFile())) return GLOBAL_ORIGIN;
   return originOfDeclaration(decl, repo, depth + 1);
 }
 
-function originOfDeclaration(decl: Node, repo: RepoLookup, depth: number): Origin {
-  if (depth > MAX_TRACE_DEPTH) return 'unknown';
+function originOfDeclaration(decl: Node, repo: RepoLookup, depth: number): string | null {
+  if (depth > MAX_TRACE_DEPTH) return null;
 
   if (Node.isImportSpecifier(decl) || Node.isImportClause(decl) || Node.isNamespaceImport(decl)) {
     const importDecl = decl.getFirstAncestorByKind(SyntaxKind.ImportDeclaration);
     const target = importDecl?.getModuleSpecifierSourceFile();
     if (!target || !repo.isRepoFile(target)) {
       const spec = importDecl?.getModuleSpecifierValue() ?? '';
-      return spec.startsWith('.') ? 'unknown' : 'package';
+      return spec.startsWith('.') ? null : spec;
     }
     const nameNode = Node.isImportSpecifier(decl) ? decl.getNameNode() : Node.isImportClause(decl) ? decl.getDefaultImport() : decl.getNameNode();
     const sym = nameNode?.getSymbol();
     const aliased = sym?.isAlias() ? sym.getAliasedSymbol() : undefined;
     const targetDecl = aliased?.getDeclarations()[0];
-    return targetDecl ? originOfDeclaration(targetDecl, repo, depth + 1) : 'unknown';
+    return targetDecl ? originOfDeclaration(targetDecl, repo, depth + 1) : null;
   }
 
   if (Node.isVariableDeclaration(decl)) {
     const init = decl.getInitializer();
-    return init ? originOfExpression(init, repo, depth + 1) : 'unknown';
+    return init ? originOfExpression(init, repo, depth + 1) : null;
   }
 
   if (Node.isBindingElement(decl)) {
     const owner = decl.getFirstAncestor((a) => Node.isVariableDeclaration(a) || Node.isParameterDeclaration(a));
-    return owner ? originOfDeclaration(owner, repo, depth + 1) : 'unknown';
+    return owner ? originOfDeclaration(owner, repo, depth + 1) : null;
   }
 
   if (Node.isParameterDeclaration(decl)) {
@@ -152,7 +178,7 @@ function originOfDeclaration(decl: Node, repo: RepoLookup, depth: number): Origi
     }
   }
 
-  return 'unknown';
+  return null;
 }
 
 function leftmost(name: Node): Node {

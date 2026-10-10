@@ -12,7 +12,7 @@ import type { FnWalkthrough } from './fn.js';
 /** Bumped when the saved shape changes; older saves are treated as never generated. */
 export const SAVED_VERSION = 2;
 
-export type ScopeKind = 'fn' | 'file';
+export type ScopeKind = 'fn' | 'file' | 'endpoint';
 
 /** The code a section explains: a named symbol (found again by name when lines move) or a fixed range. */
 export interface BlockRef {
@@ -39,6 +39,10 @@ export interface Section {
   /** The --depth of callees its context was built with; a different depth regenerates it. */
   depth: number;
   walkthrough: FnWalkthrough;
+  /** Endpoint sections: every code block sent to the LLM, `block` (the handler) first. */
+  blocks?: BlockRef[];
+  /** Endpoint sections: chainHashOf the route when generated. */
+  chainHash?: string;
 }
 
 export interface SymbolSummary {
@@ -61,12 +65,28 @@ export interface FileOverview {
   failed: { symbol: string; reason: string }[];
 }
 
+/** An endpoint's route facts (CLAUDE.md §6.3), from the index alone; rebuilt on every run. */
+export interface EndpointOverview {
+  method: string;
+  path: string;
+  mounts: { file: string; line: number; prefix: string }[];
+  chain: { phase: string; label: string; at: string }[];
+  errorHandlers: { phase: string; label: string; at: string }[];
+  sideEffects: { symbol: string; kind: string; detail: string; at: string }[];
+  errorPaths: { symbol: string; error: string; status: number | null; at: string }[];
+  warnings: string[];
+  /** Mermaid sequenceDiagram source. */
+  diagram: string;
+}
+
 export interface SavedWalkthrough {
   version: typeof SAVED_VERSION;
   scopeKind: ScopeKind;
-  /** "file#symbol" or "file:start-end" for fn, "file" for file. */
+  /** "file#symbol" or "file:start-end" for fn, "file" for file, "METHOD /path" for endpoint. */
   scopeRef: string;
   overview: FileOverview | null;
+  /** Endpoint walkthroughs only. */
+  endpoint?: EndpointOverview;
   sections: Section[];
 }
 
@@ -116,7 +136,7 @@ export function hashLines(lines: string[]): string {
 
 /** walkthroughs.content_hash: changes whenever any section's block changes. */
 export function contentHashOf(sections: Section[]): string {
-  const keys = sections.map((s) => `${s.block.file}#${s.block.symbol ?? `${s.block.start}-${s.block.end}`}:${s.block.hash}`);
+  const keys = sections.flatMap((s) => (s.blocks ?? [s.block]).map((b) => `${b.file}#${b.symbol ?? `${b.start}-${b.end}`}:${b.hash}`));
   return createHash('sha256').update(keys.join('\n')).digest('hex');
 }
 
@@ -126,7 +146,7 @@ export function fnScopeRef(target: FnTarget): string {
 
 /** One walkthrough for the stepper and plain-text output: a file's sections become prefixed stages. */
 export function flattenWalkthrough(saved: SavedWalkthrough): FnWalkthrough {
-  if (saved.scopeKind === 'fn') return saved.sections[0].walkthrough;
+  if (saved.scopeKind !== 'file') return saved.sections[0].walkthrough;
   const o = saved.overview!;
   const prefix = (s: Section, id: string) => `${s.block.symbol ?? 'block'}/${id}`;
   const all = saved.sections;
@@ -161,5 +181,18 @@ export function overviewNotes(o: FileOverview): string[] {
     `Walk order (helpers first): ${o.order.join(' → ') || 'no functions'}`,
     ...o.cycleBreaks.map((c) => `Cycle: ${c}`),
     ...o.failed.map((f) => `Not explained: ${f.symbol}: ${f.reason}`),
+  ];
+}
+
+/** The endpoint overview as plain lines, shared by the terminal, the stepper and Markdown. */
+export function endpointNotes(o: EndpointOverview): string[] {
+  return [
+    `Route: ${o.method} ${o.path}`,
+    `Mounted via: ${o.mounts.map((m) => `${m.prefix} (${m.file}:${m.line})`).join(' → ') || 'directly on the app'}`,
+    `Middleware chain: ${o.chain.map((n) => `${n.label} [${n.phase}]`).join(' → ')}`,
+    `Error handlers: ${o.errorHandlers.map((n) => `${n.label} (${n.at})`).join(', ') || 'none (Express default)'}`,
+    ...o.sideEffects.map((e) => `Side effect: ${e.kind} ${e.detail} in ${e.symbol} (${e.at})`),
+    ...o.errorPaths.map((p) => `Can fail: ${p.error}${p.status !== null ? ` → ${p.status}` : ''} in ${p.symbol} (${p.at})`),
+    ...o.warnings.map((w) => `Warning: ${w}`),
   ];
 }

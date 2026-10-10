@@ -33,11 +33,16 @@ const MAX_RETRIES = 2;
 
 /** Asks for a walkthrough of `ctx`; a response that fails the §8.2 schema is re-requested up to twice. */
 export async function generateFnWalkthrough(provider: LlmProvider, ctx: FnContext, options: FnPromptOptions = {}): Promise<GenerateResult> {
-  const messages: LlmMessage[] = [{ role: 'user', content: renderFnPrompt(ctx, options) }];
+  return generateWalkthrough(provider, { system: FN_SYSTEM_PROMPT, prompt: renderFnPrompt(ctx, options) });
+}
+
+/** One walkthrough request: the response must match the §8.2 schema; invalid output is re-requested up to twice. */
+export async function generateWalkthrough(provider: LlmProvider, request: { system: string; prompt: string }): Promise<GenerateResult> {
+  const messages: LlmMessage[] = [{ role: 'user', content: request.prompt }];
   let lastProblem = '';
 
   for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
-    const raw = await provider.generate({ system: FN_SYSTEM_PROMPT, messages });
+    const raw = await provider.generate({ system: request.system, messages });
     const problem = validate(raw);
     if (typeof problem !== 'string') return { walkthrough: problem, attempts: attempt };
 

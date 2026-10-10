@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command, InvalidArgumentError, Option } from 'commander';
 import { runFile, type FileOptions } from './commands/file.js';
+import { runEndpoint, type EndpointOptions } from './commands/endpoint.js';
 import { runFn, type FnOptions } from './commands/fn.js';
 import { runList } from './commands/list.js';
 import { runIndex } from './commands/index.js';
@@ -51,6 +52,18 @@ program
   .addOption(new Option('--out <format>', 'output format').choices(['terminal', 'json', 'md']).default('terminal'))
   .action(async (file: string, opts: FileOptions) => {
     process.exitCode = await runFile(process.cwd(), file, opts, io);
+  });
+
+program
+  .command('endpoint')
+  .description('walkthrough of a backend endpoint: mounts, middleware chain, handler, side effects')
+  .argument('<route>', 'e.g. "POST /api/patients/enroll" (a concrete path like "GET /api/patients/42" also works)')
+  .option('--no-llm', 'print only the static facts')
+  .option('--depth <n>', 'how many levels of calls below the handler and middleware to include', parseDepth, 3)
+  .option('--refresh', 'ignore the saved walkthrough and regenerate', false)
+  .addOption(new Option('--out <format>', 'output format').choices(['terminal', 'json', 'md']).default('terminal'))
+  .action(async (route: string, opts: EndpointOptions) => {
+    process.exitCode = await runEndpoint(process.cwd(), route, opts, io);
   });
 
 program

@@ -1,8 +1,8 @@
 import type { FnContext } from '../context/fn.js';
 import type { LlmProvider } from '../llm/generate.js';
 import type { Reference } from '../llm/schema.js';
-import { explainFn } from './fn.js';
-import { hashLines, sourceFiles, type Section, type SourceFiles } from './saved.js';
+import { explainFn, type FnWalkthrough } from './fn.js';
+import { hashLines, sourceFiles, type BlockRef, type Section, type SourceFiles } from './saved.js';
 
 /**
  * Explains ctx's target and records what staleness checks need. `symbol` names the block so it can
@@ -15,19 +15,31 @@ export async function generateSection(
   options: { symbol: string | null; model: string; depth: number; condensed?: boolean },
 ): Promise<Section> {
   const walkthrough = await explainFn(provider, ctx, repoRoot, { condensed: options.condensed });
+  const { target } = ctx;
+  const block = { file: target.file, symbol: options.symbol, start: target.start, end: target.end, hash: hashLines(target.code.lines) };
+  return recordSection(walkthrough, block, Object.keys(ctx.files), repoRoot, options);
+}
+
+/** A section for an explained walkthrough: hashes of its block, its steps' lines and the files it cites. */
+export function recordSection(
+  walkthrough: FnWalkthrough,
+  block: BlockRef,
+  citedFiles: string[],
+  repoRoot: string,
+  options: { model: string; depth: number },
+): Section {
   const files = sourceFiles(repoRoot);
   const lines = (file: string) => files.lines(file) ?? [];
   const steps = walkthrough.stages.flatMap((s) => s.steps);
-  const { target } = ctx;
   const refLines: Record<string, string> = {};
   for (const r of steps.flatMap((s) => s.references)) {
     const text = lines(r.file)[r.line - 1];
     if (text !== undefined) refLines[`${r.file}:${r.line}`] = text;
   }
   return {
-    block: { file: target.file, symbol: options.symbol, start: target.start, end: target.end, hash: hashLines(target.code.lines) },
+    block,
     stepHashes: Object.fromEntries(steps.map((s) => [s.id, hashLines(lines(s.code_ref.file).slice(s.code_ref.start - 1, s.code_ref.end))])),
-    fileHashes: Object.fromEntries(Object.keys(ctx.files).map((f) => [f, files.hash(f) ?? ''])),
+    fileHashes: Object.fromEntries(citedFiles.map((f) => [f, files.hash(f) ?? ''])),
     refLines,
     generatedAt: new Date().toISOString(),
     model: options.model,
@@ -77,20 +89,24 @@ export function reuseSection(
       references: step.references.flatMap(relocate),
     })),
   }));
-  const note = dropped.length
-    ? [`${dropped.length} reference${dropped.length === 1 ? '' : 's'} dropped because the code ${dropped.length === 1 ? 'it' : 'they'} pointed to changed: ${dropped.join(', ')}`]
-    : [];
   return {
     ...prev,
     block: { ...prev.block, start: current.start, end: current.end },
     fileHashes: Object.fromEntries(Object.keys(prev.fileHashes).map((f) => [f, files.hash(f) ?? ''])),
     refLines,
-    walkthrough: { ...w, scope: { ...w.scope, start: current.start, end: current.end }, stages, unresolved: [...w.unresolved, ...note] },
+    walkthrough: { ...w, scope: { ...w.scope, start: current.start, end: current.end }, stages, unresolved: [...w.unresolved, ...droppedNote(dropped)] },
   };
 }
 
 /** The line holding exactly `text` nearest to `near`; null if gone. Lines without an identifier ("}") are too ambiguous to match. */
-function findLine(lines: string[] | null, text: string | undefined, near: number): number | null {
+/** The note added when reuse drops references whose code changed. */
+export function droppedNote(dropped: string[]): string[] {
+  return dropped.length
+    ? [`${dropped.length} reference${dropped.length === 1 ? '' : 's'} dropped because the code ${dropped.length === 1 ? 'it' : 'they'} pointed to changed: ${dropped.join(', ')}`]
+    : [];
+}
+
+export function findLine(lines: string[] | null, text: string | undefined, near: number): number | null {
   if (!lines || text === undefined || !/[A-Za-z_$]/.test(text)) return null;
   let best: number | null = null;
   lines.forEach((l, i) => {

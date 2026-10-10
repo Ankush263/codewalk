@@ -1,0 +1,133 @@
+{
+  "title": "How POST /api/patients/enroll works",
+  "summary": "The request passes JSON body parsing, session auth, rate limiting and schema validation before enrollHandler enrolls the patient in one database transaction and answers 201.",
+  "stages": [
+    {
+      "name": "Request",
+      "steps": [
+        {
+          "id": "s1",
+          "code_ref": { "file": "api/app.ts", "start": 9, "end": 10 },
+          "explanation": "`express.json` parses the JSON body into `req.body`, then `app.use` hands every path under `/api` to `apiRouter`.",
+          "example": {
+            "input": "POST /api/patients/enroll, Authorization: Bearer tok_1, body {\"firstName\":\"Asha\",\"lastName\":\"Rao\",\"phone\":\"+91 98765-43210\",\"dateOfBirth\":\"1990-04-02\"}",
+            "state_after": "req.body = { firstName: \"Asha\", lastName: \"Rao\", phone: \"+91 98765-43210\", dateOfBirth: \"1990-04-02\" }"
+          },
+          "references": [{ "file": "api/routes/index.ts", "line": 6, "role": "callee" }],
+          "docs": [{ "package": "express", "symbol": "express.json" }],
+          "concepts": ["middleware chain", "router mounting"],
+          "risks": ["A malformed JSON body is rejected before any route code runs."]
+        }
+      ]
+    },
+    {
+      "name": "Middleware",
+      "steps": [
+        {
+          "id": "s2",
+          "code_ref": { "file": "api/middleware/auth.ts", "start": 11, "end": 23 },
+          "explanation": "`requireAuth` takes the bearer token from the `authorization` header, loads `session:${token}` with `redis.get` and stores the parsed `SessionUser` on `req.user`.",
+          "example": { "input": "the same request", "state_after": "token = \"tok_1\"; req.user = { id: \"u_7\", role: \"staff\" } (session assumed to exist in Redis)" },
+          "references": [{ "file": "api/routes/patients.ts", "line": 11, "role": "caller" }],
+          "docs": [],
+          "concepts": ["bearer token", "session store"],
+          "risks": ["Missing token or expired session: UnauthorizedError, 401 via errorHandler"]
+        },
+        {
+          "id": "s3",
+          "code_ref": { "file": "api/middleware/rateLimit.ts", "start": 9, "end": 17 },
+          "explanation": "`rateLimit` counts requests per client with `redis.incr` on `ratelimit:${req.ip}`, sets an expiry with `redis.expire` on the first hit, and passes `TooManyRequestsError` to `next` once the count is over the limit.",
+          "example": { "input": "the same request from 10.0.0.5", "state_after": "key = \"ratelimit:10.0.0.5\"; count = 1; expiry set" },
+          "references": [{ "file": "api/routes/patients.ts", "line": 13, "role": "caller" }],
+          "docs": [],
+          "concepts": ["fixed-window rate limiting"],
+          "risks": ["Too many requests: TooManyRequestsError, 429 via errorHandler"]
+        }
+      ]
+    },
+    {
+      "name": "Validation",
+      "steps": [
+        {
+          "id": "s4",
+          "code_ref": { "file": "api/middleware/validate.ts", "start": 7, "end": 13 },
+          "explanation": "`validateBody` runs `schema.safeParse` on `req.body`; on failure it passes a `ValidationError` with the issue list to `next`, otherwise it replaces `req.body` with `result.data`.",
+          "example": { "input": "the same body", "state_after": "result.success = true; req.body is the parsed EnrollInput" },
+          "references": [{ "file": "api/routes/patients.ts", "line": 13, "role": "caller" }],
+          "docs": [],
+          "concepts": ["schema validation"],
+          "risks": ["Invalid body: ValidationError, 400 with the issues list"]
+        }
+      ]
+    },
+    {
+      "name": "Business logic",
+      "steps": [
+        {
+          "id": "s5",
+          "code_ref": { "file": "api/controllers/patientsController.ts", "start": 9, "end": 10 },
+          "explanation": "`enrollHandler` reads `user` from the request and calls `enrollPatient` with `req.body` and `user.id`.",
+          "example": { "input": "the same request", "state_after": "enrollPatient(body, \"u_7\") is awaited" },
+          "references": [{ "file": "api/services/enrollService.ts", "line": 35, "role": "callee" }],
+          "docs": [],
+          "concepts": ["controller / service split"],
+          "risks": ["Any error is passed to next(err) and answered by errorHandler."]
+        },
+        {
+          "id": "s6",
+          "code_ref": { "file": "api/services/enrollService.ts", "start": 36, "end": 45 },
+          "explanation": "`enrollPatient` normalizes the phone with `normalizePhone`, rejects anyone under 18 using `calculateAge`, and throws `ConflictError` when `findPatientByPhone` finds an existing patient.",
+          "example": { "input": "phone \"+91 98765-43210\", dateOfBirth \"1990-04-02\"", "state_after": "phone = \"9876543210\"; age = 36; existing = null (assumed)" },
+          "references": [{ "file": "api/repositories/patientRepository.ts", "line": 19, "role": "callee" }],
+          "docs": [],
+          "concepts": ["input normalization"],
+          "risks": ["Under 18 or phone already enrolled: ConflictError, 409 via errorHandler"]
+        }
+      ]
+    },
+    {
+      "name": "Persistence",
+      "steps": [
+        {
+          "id": "s7",
+          "code_ref": { "file": "api/services/enrollService.ts", "start": 47, "end": 58 },
+          "explanation": "It opens a transaction with `client.query`, writes the patient with `insertPatient` and the consent with `insertConsent`, then sends `COMMIT`.",
+          "example": { "input": "the normalized input", "state_after": "patients row inserted (id assumed \"p_42\"); consents row inserted; transaction committed" },
+          "references": [
+            { "file": "api/repositories/patientRepository.ts", "line": 35, "role": "callee" },
+            { "file": "api/repositories/patientRepository.ts", "line": 45, "role": "callee" }
+          ],
+          "docs": [],
+          "concepts": ["database transaction"],
+          "risks": ["A failed insert rolls the transaction back and the error reaches errorHandler as a 500."]
+        },
+        {
+          "id": "s8",
+          "code_ref": { "file": "api/services/enrollService.ts", "start": 60, "end": 61 },
+          "explanation": "After the commit it caches the patient under `patient:${patient.id}` with `redis.set` and emits `patient.enrolled` on `bus`.",
+          "example": { "input": "patient p_42", "state_after": "Redis key patient:p_42 set; patient.enrolled emitted" },
+          "references": [],
+          "docs": [],
+          "concepts": ["cache write-through", "in-process events"],
+          "risks": []
+        }
+      ]
+    },
+    {
+      "name": "Response",
+      "steps": [
+        {
+          "id": "s9",
+          "code_ref": { "file": "api/controllers/patientsController.ts", "start": 11, "end": 11 },
+          "explanation": "`res.status` sets 201 and `res.json` sends the created patient back.",
+          "example": { "input": "patient p_42", "state_after": "HTTP 201 with the patient JSON" },
+          "references": [],
+          "docs": [],
+          "concepts": [],
+          "risks": []
+        }
+      ]
+    }
+  ],
+  "unresolved": ["Listeners of patient.enrolled are registered at runtime, so what runs after the emit is unknown statically."]
+}

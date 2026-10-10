@@ -271,3 +271,91 @@ describe('openStore', () => {
     expect(error.message).not.toContain('secret');
   });
 });
+
+describe('store: routes and side effects', () => {
+  let store: Store;
+
+  const appFile: FileFacts = {
+    path: 'api/app.ts',
+    hash: 'h-app',
+    language: 'typescript',
+    symbols: [{ name: 'createApp', kind: 'function', startLine: 3, endLine: 9, exported: true, signature: null }],
+    calls: [],
+    imports: [],
+    routerCalls: [
+      { receiver: { key: 'api/app.ts#app', kind: 'app' }, receiverText: 'app', callKind: 'use', method: null, path: null, pathText: null, line: 4, endLine: 4, orderIdx: 0,
+        handlers: [{ kind: 'package', package: 'express', text: 'express.json()' }] },
+      { receiver: { key: 'api/app.ts#app', kind: 'app' }, receiverText: 'app', callKind: 'use', method: null, path: null, pathText: null, line: 5, endLine: 5, orderIdx: 1,
+        handlers: [{ kind: 'unresolved', text: 'middlewares[0]' }] },
+      { receiver: { key: 'api/app.ts#app', kind: 'app' }, receiverText: 'app', callKind: 'use', method: null, path: '/api', pathText: null, line: 6, endLine: 6, orderIdx: 2,
+        handlers: [{ kind: 'router', receiverKey: 'api/routes.ts#r', text: 'r' }] },
+    ],
+  };
+  const routesFile: FileFacts = {
+    path: 'api/routes.ts',
+    hash: 'h-routes',
+    language: 'typescript',
+    symbols: [
+      { name: 'auth', kind: 'function', startLine: 3, endLine: 5, exported: false, signature: null },
+      { name: 'create', kind: 'function', startLine: 7, endLine: 12, exported: false, signature: null },
+    ],
+    calls: [],
+    imports: [],
+    routerCalls: [
+      { receiver: { key: 'api/routes.ts#r', kind: 'router' }, receiverText: 'r', callKind: 'route', method: 'POST', path: '/items', pathText: null, line: 14, endLine: 15, orderIdx: 0,
+        handlers: [
+          { kind: 'symbol', key: { file: 'api/routes.ts', name: 'auth', startLine: 3 }, arity: 3, text: 'auth' },
+          { kind: 'symbol', key: { file: 'api/routes.ts', name: 'create', startLine: 7 }, arity: 2, text: 'create' },
+        ] },
+    ],
+    sideEffects: [{ symbol: { name: 'create', startLine: 7 }, kind: 'db_write', detail: 'INSERT items', line: 9 }],
+  };
+
+  beforeAll(async () => {
+    store = await openStore({ url: DATABASE_URL, schema: `cw_test_routes_${randomBytes(4).toString('hex')}` });
+    await store.migrate();
+    await store.applyIndexChanges({ files: [appFile, routesFile] });
+  });
+
+  afterAll(async () => {
+    await store?.dropSchema();
+    await store?.close();
+  });
+
+  it('stitches stored registrations into full routes with resolved handlers', async () => {
+    const routes = await store.listRoutes();
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toMatchObject({
+      method: 'POST',
+      fullPath: '/api/items',
+      handlerLabel: 'create',
+      handler: { file: 'api/routes.ts', name: 'create', startLine: 7 },
+      file: 'api/routes.ts',
+      line: 14,
+      endLine: 15,
+      mountChain: [{ file: 'api/app.ts', line: 6, endLine: 6, prefix: '/api' }],
+      warnings: [],
+    });
+  });
+
+  it('returns the middleware chain in order with symbols, labels and unresolved notes', async () => {
+    const [route] = await store.listRoutes();
+    const chain = await store.getMiddlewareChain(route.id);
+    expect(chain.map((m) => [m.orderIdx, m.phase, m.label, m.symbol?.name ?? null, m.unresolvedNote])).toEqual([
+      [0, 'app', 'express.json()', null, null],
+      [1, 'app', 'middlewares[0]', null, 'unresolved: likely middlewares[0] (middleware registered at api/app.ts:5)'],
+      [2, 'route', 'auth', 'auth', null],
+    ]);
+  });
+
+  it('stores side effects per symbol', async () => {
+    const [create] = await store.findSymbol('api/routes.ts', 'create');
+    expect(await store.getSideEffects([create.id])).toEqual([{ symbolId: create.id, kind: 'db_write', detail: 'INSERT items', line: 9 }]);
+  });
+
+  it('rebuilds routes after a refresh and records routers it cannot reach', async () => {
+    await store.applyIndexChanges({ callRefreshes: [{ path: 'api/app.ts', calls: [], routerCalls: [], sideEffects: [] }] });
+    expect(await store.listRoutes()).toEqual([]);
+    expect(await store.getRouteWarnings()).toEqual(['api/routes.ts: router `r` has routes but is never mounted on an app']);
+  });
+});

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FnContext } from '../context/fn.js';
 import type { Step, Walkthrough } from '../llm/schema.js';
-import { codeSpans, identifiers, verifyFnWalkthrough } from './verify.js';
+import { codeSpans, identifiers, verifyFnWalkthrough, verifyWalkthrough, vocabularyOf } from './verify.js';
 
 const sym = (id: number, file: string, name: string, startLine: number, endLine: number) => ({
   id, file, name, kind: 'function' as const, startLine, endLine, exported: true, signature: null,
@@ -105,5 +105,23 @@ describe('identifier extraction', () => {
   it('reads code spans and skips escapes and numbers', () => {
     expect(codeSpans('use `a.b(c)` then `x < 18`')).toEqual(['a.b(c)', 'x < 18']);
     expect(identifiers("phone.replace(/\\D/g, '') + 10")).toEqual(['phone', 'replace', 'g']);
+  });
+});
+
+describe('verifyWalkthrough with explicit facts', () => {
+  const step = (id: string, file: string, explanation: string) => ({
+    id, code_ref: { file, start: 1, end: 2 }, explanation, example: { input: 'x', state_after: 'y' },
+    references: [], docs: [{ package: 'express', symbol: 'Router' }], concepts: [], risks: [],
+  });
+
+  it('accepts code_refs into any cited file and checks identifiers against the given vocabulary', () => {
+    const facts = { files: { 'a.ts': 10, 'b.ts': 5 }, vocabulary: vocabularyOf(['const total = add(a, b)']), packages: new Set<string>() };
+    const result = verifyWalkthrough(
+      { title: 't', summary: 's', unresolved: [], stages: [{ name: 'S', steps: [step('s1', 'a.ts', 'Calls `add`.'), step('s2', 'b.ts', 'Uses `missing`.')] }] },
+      facts,
+    );
+    expect(result.walkthrough.stages[0].steps.map((s) => s.id)).toEqual(['s1']);
+    expect(result.dropped[0].reasons[0]).toContain('`missing`');
+    expect(result.removedDocs).toEqual([{ stepId: 's1', package: 'express', symbol: 'Router' }]);
   });
 });

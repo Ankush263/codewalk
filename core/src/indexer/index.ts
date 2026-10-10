@@ -37,7 +37,11 @@ export async function indexRepo(repoRoot: string, config: WalkConfig, store: Sto
 
   let refreshed: string[] = [];
   if (touched.length > 0) {
-    const dependents = new Set([...(await store.getCallerFiles(touched)), ...(await store.getImporters(touched))]);
+    const dependents = new Set([
+      ...(await store.getCallerFiles(touched)),
+      ...(await store.getImporters(touched)),
+      ...(await store.getRouterCallFiles(touched)),
+    ]);
     refreshed = [...dependents].filter((p) => present.has(p) && !touched.includes(p)).sort();
 
     const project = createProject(root);
@@ -53,7 +57,10 @@ export async function indexRepo(repoRoot: string, config: WalkConfig, store: Sto
       language: f.language,
       ...extractor.extract(f.path),
     }));
-    const callRefreshes = refreshed.map((path) => ({ path, calls: extractor.extract(path).calls }));
+    const callRefreshes = refreshed.map((path) => {
+      const { calls, routerCalls, sideEffects } = extractor.extract(path);
+      return { path, calls, routerCalls, sideEffects };
+    });
 
     await store.applyIndexChanges({ files: fileFacts, removedPaths: removed, callRefreshes });
   }

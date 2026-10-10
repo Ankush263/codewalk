@@ -5,7 +5,7 @@ const row = (status: Partial<ListRow['status']>): ListRow => ({
   scopeKind: 'file',
   scopeRef: 'web/types.ts',
   savedAt: new Date('2026-10-09T10:00:00Z'),
-  status: { fresh: false, sections: [], uncovered: [], fileRemoved: false, staleSteps: 0, totalSteps: 0, ...status },
+  status: { fresh: false, sections: [], uncovered: [], fileRemoved: false, chainChanged: false, routeRemoved: false, staleSteps: 0, totalSteps: 0, ...status },
 });
 
 describe('formatList', () => {

@@ -1,4 +1,4 @@
-import type { FileContext, ScopeKind, WalkthroughStatus, CodeBlock, FnContext, FnWalkthrough, WalkthroughStep } from '@codewalk/core';
+import { endpointDiagram, type EndpointContext, type EndpointNode, type FileContext, type ScopeKind, type WalkthroughStatus, type CodeBlock, type FnContext, type FnWalkthrough, type WalkthroughStep } from '@codewalk/core';
 
 // Plain-text renderings: the `--no-llm` facts and the non-interactive walkthrough (piped output).
 
@@ -31,6 +31,32 @@ export function formatFileFacts(ctx: FileContext): string {
   section(out, 'Call cycles', ctx.cycleBreaks);
   section(out, 'Warnings', ctx.warnings);
   return out.join('\n');
+}
+
+export function formatEndpointFacts(ctx: EndpointContext): string {
+  const out = [`endpoint ${ctx.route.method} ${ctx.route.fullPath}`];
+  section(out, 'Mounted through', ctx.route.mounts.map((m) => `${m.prefix}  ${m.file}:${m.line}`));
+  section(out, 'Middleware chain', ctx.chain.map((n, i) => `${i + 1}. ${n.label} [${n.phase}]  ${nodeAt(n)}`));
+  section(out, 'Error handlers', ctx.errorHandlers.map((n) => `${n.label}  ${nodeAt(n)}`));
+  section(out, 'Side effects', ctx.sideEffects.map((e) => `${e.kind} ${e.detail}  (${e.symbol.name} ${e.symbol.file}:${e.line})`));
+  section(out, 'Error paths', ctx.errorPaths.map((p) => `${p.error}${p.status !== null ? ` → ${p.status}` : ''}  (${p.symbol.name} ${p.symbol.file}:${p.line})`));
+  section(
+    out,
+    'Calls',
+    ctx.callees.map((c) => {
+      const target = c.callee ? `${c.callee.name}  ${c.callee.file}:${c.callee.startLine}` : `${c.calleeText}  ${c.resolved ? '(package / built-in)' : '(unresolved)'}`;
+      return `${'  '.repeat(c.depth - 1)}${c.caller.name} → ${target}`;
+    }),
+  );
+  section(out, 'Unresolved', ctx.unresolved.map((u) => u.note));
+  section(out, 'Omitted (context budget)', ctx.omitted);
+  section(out, 'Warnings', ctx.warnings);
+  section(out, 'Sequence diagram (Mermaid)', endpointDiagram(ctx).split('\n'));
+  return out.join('\n');
+}
+
+function nodeAt(n: EndpointNode): string {
+  return n.symbol ? `${n.symbol.file}:${n.symbol.startLine}` : `${n.registeredAt.file}:${n.registeredAt.line}`;
 }
 
 export function formatWalkthrough(w: FnWalkthrough, codeLines: (file: string) => string[], notes: string[] = []): string {
@@ -113,24 +139,27 @@ export interface ListRow {
 }
 
 export function formatList(rows: ListRow[]): string {
-  if (rows.length === 0) return 'No saved walkthroughs yet. Run `walk fn` or `walk file` to create one.';
+  if (rows.length === 0) return 'No saved walkthroughs yet. Run `walk fn`, `walk file` or `walk endpoint` to create one.';
   const width = Math.max(...rows.map((r) => r.scopeRef.length));
+  const kindWidth = Math.max(...rows.map((r) => r.scopeKind.length));
   return rows
     .map((r) => {
       const s = r.status;
       const detail = s.fresh ? `${s.totalSteps} steps` : staleDetail(s);
       const saved = new Date(r.savedAt).toISOString().slice(0, 16).replace('T', ' ');
-      return `${s.fresh ? 'fresh' : 'stale'}  ${r.scopeKind.padEnd(4)}  ${r.scopeRef.padEnd(width)}  ${detail} · saved ${saved}`;
+      return `${s.fresh ? 'fresh' : 'stale'}  ${r.scopeKind.padEnd(kindWidth)}  ${r.scopeRef.padEnd(width)}  ${detail} · saved ${saved}`;
     })
     .join('\n');
 }
 
 function staleDetail(s: WalkthroughStatus): string {
   const label = (x: WalkthroughStatus['sections'][number]) => x.symbol ?? `${x.file} lines`;
-  const changed = s.sections.filter((x) => x.state === 'changed').map(label);
+  const changed = s.sections.filter((x) => x.state === 'changed').flatMap((x) => (x.changedBlocks?.length ? x.changedBlocks : [label(x)]));
   const removed = s.sections.filter((x) => x.state === 'missing').map(label);
   const parts = [`${s.staleSteps}/${s.totalSteps} steps stale`];
   if (s.fileRemoved) parts.push('file removed');
+  if (s.routeRemoved) parts.push('route removed');
+  if (s.chainChanged) parts.push('middleware chain changed');
   if (changed.length) parts.push(`changed: ${changed.join(', ')}`);
   if (removed.length) parts.push(`removed: ${removed.join(', ')}`);
   if (s.uncovered.length) parts.push(`not covered: ${s.uncovered.join(', ')}`);

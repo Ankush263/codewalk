@@ -1,4 +1,4 @@
-import { Node, SyntaxKind, type SourceFile, type ts } from 'ts-morph';
+import { Node, SyntaxKind, type CallExpression, type PropertyAccessExpression, type SourceFile, type ts } from 'ts-morph';
 import type { SymbolFact, SymbolKind } from '../store/types.js';
 
 // Decides which declarations become symbols and what they are called. The same registry is
@@ -22,8 +22,14 @@ export interface FileSymbols {
 
 const REACT_WRAPPERS = new Set(['memo', 'forwardRef', 'useCallback', 'React.memo', 'React.forwardRef']);
 const MAX_SIGNATURE = 300;
+// Express-style registrations whose inline function arguments become `route_handler` symbols.
+const ROUTE_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'options', 'head', 'all', 'use']);
 
-export function collectSymbols(sourceFile: SourceFile): FileSymbols {
+/**
+ * `isRouteReceiver` decides whether `x` in `x.get('/p', (req, res) => ...)` is an Express app or router;
+ * only then does the inline function become a `route_handler` symbol (sqlite's `db.get(sql, cb)` doesn't).
+ */
+export function collectSymbols(sourceFile: SourceFile, isRouteReceiver: (receiver: Node) => boolean = () => false): FileSymbols {
   const exported = new Set<ts.Node>();
   for (const decls of sourceFile.getExportedDeclarations().values()) {
     for (const d of decls) if (d.getSourceFile() === sourceFile) exported.add(d.compilerNode);
@@ -116,6 +122,32 @@ export function collectSymbols(sourceFile: SourceFile): FileSymbols {
       return;
     }
 
+    // `router.get('/x', (req, res) => ...)`: the inline handler is a symbol, so it can be cited,
+    // called from, and tagged with side effects.
+    if (Node.isCallExpression(node)) {
+      const route = routeCallName(node);
+      if (route && isRouteReceiver(route.receiver)) {
+        visit(node.getExpression(), owner, objectOwner);
+        for (const arg of node.getArguments()) {
+          for (const item of Node.isArrayLiteralExpression(arg) ? arg.getElements() : [arg]) {
+            const fn = unwrap(item);
+            if (fn && isInlineHandler(fn)) {
+              const start = fn.getStartLineNumber();
+              let name = qualify(route.name);
+              // Two handlers on one line would share (name, startLine), the key facts are joined on.
+              for (let n = 2; symbols.some((s) => s.name === name && s.startLine === start); n++) name = `${qualify(route.name)}#${n}`;
+              const sym: RegisteredSymbol = { ...functionSymbol(name, fn, fn, false, 'function'), kind: 'route_handler' };
+              register(sym, fn);
+              fn.forEachChild((c) => visit(c, sym, null));
+            } else {
+              visit(item, owner, objectOwner);
+            }
+          }
+        }
+        return;
+      }
+    }
+
     node.forEachChild((c) => visit(c, owner, objectOwner));
   };
 
@@ -125,7 +157,7 @@ export function collectSymbols(sourceFile: SourceFile): FileSymbols {
 }
 
 /** A function-like initializer, looking through parentheses, `as`, and React wrappers like memo(() => ...). */
-function functionInitializer(init: Node | undefined): Node | undefined {
+export function functionInitializer(init: Node | undefined): Node | undefined {
   const node = unwrap(init);
   if (!node) return undefined;
   if (Node.isArrowFunction(node) || Node.isFunctionExpression(node)) return node;
@@ -186,4 +218,32 @@ function header(text: string): string {
 
 function range(node: Node): { startLine: number; endLine: number } {
   return { startLine: node.getStartLineNumber(), endLine: node.getEndLineNumber() };
+}
+
+/** "app.use", "patientsRouter.get /:id", "r.post /x" for `r.route('/x').post(...)`, with the receiver; null when not an Express-style registration. */
+function routeCallName(call: CallExpression): { name: string; receiver: Node } | null {
+  const callee = call.getExpression();
+  if (!Node.isPropertyAccessExpression(callee) || !ROUTE_METHODS.has(callee.getName())) return null;
+  let receiver: Node = callee.getExpression();
+  let path: Node | undefined = call.getArguments()[0];
+  while (Node.isCallExpression(receiver) && Node.isPropertyAccessExpression(receiver.getExpression())) {
+    const inner = receiver.getExpression() as PropertyAccessExpression;
+    if (inner.getName() === 'route') {
+      path = receiver.getArguments()[0];
+      receiver = inner.getExpression();
+      break;
+    }
+    if (!ROUTE_METHODS.has(inner.getName())) break;
+    receiver = inner.getExpression();
+  }
+  const literal = path && (Node.isStringLiteral(path) || Node.isNoSubstitutionTemplateLiteral(path)) ? ` ${path.getLiteralText()}` : '';
+  return { name: `${receiver.getText().replace(/\s+/g, '')}.${callee.getName()}${literal}`, receiver };
+}
+
+/** An anonymous function taking (req, res), (req, res, next) or (err, req, res, next). */
+function isInlineHandler(node: Node): boolean {
+  const anonymous = Node.isArrowFunction(node) || (Node.isFunctionExpression(node) && !node.getName());
+  if (!anonymous) return false;
+  const params = (node as unknown as { getParameters(): Node[] }).getParameters().length;
+  return params >= 2 && params <= 4;
 }

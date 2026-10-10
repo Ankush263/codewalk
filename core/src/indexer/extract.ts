@@ -1,21 +1,27 @@
 import { dirname, relative } from 'node:path';
 import { Node, type Project, type SourceFile } from 'ts-morph';
-import type { CallFact, ImportFact, SymbolFact, SymbolKey } from '../store/types.js';
-import { collectCalls } from './calls.js';
+import type { CallFact, ImportFact, RouterCallFact, SideEffectFact, SymbolFact, SymbolKey } from '../store/types.js';
+import { collectCalls, type RepoLookup } from './calls.js';
 import { toPosix } from './discover.js';
 import { PackageVersions, packageNameOf } from './packages.js';
+import { collectRouterCalls, isExpressValue } from './routers.js';
+import { collectSideEffects } from './sideEffects.js';
 import { collectSymbols, type FileSymbols } from './symbols.js';
 
 export interface ExtractedFacts {
   symbols: SymbolFact[];
   calls: CallFact[];
   imports: ImportFact[];
+  routerCalls: RouterCallFact[];
+  sideEffects: SideEffectFact[];
 }
 
 /** Extracts facts for repo files from one ts-morph project, caching per-file symbol registries. */
 export class Extractor {
   private readonly registries = new Map<string, FileSymbols>();
   private readonly versions: PackageVersions;
+  /** How facts refer to repo files and symbols; shared by every collector. */
+  readonly repo: RepoLookup;
 
   constructor(
     private readonly project: Project,
@@ -24,19 +30,22 @@ export class Extractor {
     private readonly repoPaths: Set<string>,
   ) {
     this.versions = new PackageVersions(repoRoot);
+    this.repo = {
+      isRepoFile: (sf) => this.repoPaths.has(this.relPath(sf)),
+      keyFor: (node) => this.keyFor(node),
+      pathOf: (sf) => this.relPath(sf),
+    };
   }
 
   extract(path: string): ExtractedFacts {
     const sourceFile = this.sourceFile(path);
     const registry = this.registry(sourceFile);
-    const repo = {
-      isRepoFile: (sf: SourceFile) => this.repoPaths.has(this.relPath(sf)),
-      keyFor: (node: Node) => this.keyFor(node),
-    };
     return {
       symbols: registry.symbols.map(({ bodyOwner: _, ...fact }) => fact),
-      calls: collectCalls(sourceFile, registry.byNode, repo),
+      calls: collectCalls(sourceFile, registry.byNode, this.repo),
       imports: this.imports(sourceFile),
+      routerCalls: collectRouterCalls(sourceFile, this.repo),
+      sideEffects: collectSideEffects(sourceFile, registry.byNode, this.repo),
     };
   }
 
@@ -74,7 +83,7 @@ export class Extractor {
     const key = sourceFile.getFilePath();
     let registry = this.registries.get(key);
     if (!registry) {
-      registry = collectSymbols(sourceFile);
+      registry = collectSymbols(sourceFile, (receiver) => isExpressValue(receiver, this.repo));
       this.registries.set(key, registry);
     }
     return registry;

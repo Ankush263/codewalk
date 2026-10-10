@@ -1,10 +1,10 @@
-import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import type { Store } from '../store/index.js';
 import type { CalleeRecord, SymbolRecord } from '../store/types.js';
 import { TargetError, type FnTarget } from './target.js';
 import { declarationsUsed, type DeclarationRef } from './declarations.js';
+import { Budget, collectPackages, NON_CODE_KINDS, PROMPT_RESERVE_TOKENS, SourceCache } from './shared.js';
+
+export { estimateTokens } from './shared.js';
 
 // Selects the exact code and static facts for a `walk fn` walkthrough (CLAUDE.md §6.1, §7):
 // the target block, who calls it, what it calls (to --depth), the types and module-level values
@@ -98,14 +98,6 @@ export interface FnContextOptions {
 }
 
 const CALLER_WINDOW = 2;
-/** Room kept for the system prompt, instructions and schema. */
-const PROMPT_RESERVE_TOKENS = 3000;
-const NON_CODE_KINDS = new Set(['type', 'class']);
-
-/** Rough token estimate; good enough to keep the prompt under the configured budget. */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
 
 export async function buildFnContext(
   store: Store,
@@ -305,18 +297,6 @@ function toCallee(row: CalleeRecord, depth: number, caller: Pick<SymbolRecord, '
   };
 }
 
-/** Package imports of `files`, first occurrence of each package wins. */
-async function collectPackages(store: Store, files: string[]): Promise<PackageFact[]> {
-  const packages = new Map<string, PackageFact>();
-  for (const file of new Set(files)) {
-    for (const i of await store.getImportsForFile(file)) {
-      if (i.packageName === null || packages.has(i.packageName)) continue;
-      packages.set(i.packageName, { name: i.packageName, version: i.packageVersion, importedPath: i.importedPath, importedNames: i.importedNames });
-    }
-  }
-  return [...packages.values()];
-}
-
 /** The indexed type (or class) symbol enclosing each referenced declaration. */
 async function resolveTypes(store: Store, refs: DeclarationRef[]): Promise<SymbolRecord[]> {
   const byFile = new Map<string, SymbolRecord[]>();
@@ -331,47 +311,4 @@ async function resolveTypes(store: Store, refs: DeclarationRef[]): Promise<Symbo
     if (innermost) found.set(innermost.id, innermost);
   }
   return [...found.values()].sort((a, b) => a.file.localeCompare(b.file) || a.startLine - b.startLine);
-}
-
-class SourceCache {
-  private readonly files = new Map<string, { text: string; lines: string[] }>();
-
-  constructor(private readonly repoRoot: string) {}
-
-  block(file: string, start: number, end: number): CodeBlock {
-    const lines = this.read(file).lines;
-    const last = Math.min(end, lines.length);
-    return { file, start, end: last, lines: lines.slice(start - 1, last) };
-  }
-
-  lineCount(file: string): number {
-    return this.read(file).lines.length;
-  }
-
-  hash(file: string): string {
-    return createHash('sha256').update(this.read(file).text).digest('hex');
-  }
-
-  private read(file: string) {
-    let entry = this.files.get(file);
-    if (!entry) {
-      const text = readFileSync(join(this.repoRoot, file), 'utf8');
-      const lines = text.split(/\r?\n/);
-      if (lines.length > 1 && lines.at(-1) === '') lines.pop();
-      entry = { text, lines };
-      this.files.set(file, entry);
-    }
-    return entry;
-  }
-}
-
-class Budget {
-  constructor(private remaining: number) {}
-
-  take(block: CodeBlock): boolean {
-    const cost = estimateTokens(block.lines.join('\n')) + 10;
-    if (cost > this.remaining) return false;
-    this.remaining -= cost;
-    return true;
-  }
 }

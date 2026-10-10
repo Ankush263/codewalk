@@ -41,3 +41,29 @@ describe('walkthroughs unique-scope migration', () => {
     ).rejects.toThrow(/unique/);
   });
 });
+
+// Upgrading an index built before Phase 3: its files are unchanged, so without a forced re-extract the
+// new router/side-effect facts would never be collected and every endpoint would report "no routes".
+describe('routes-and-side-effects migration', () => {
+  const schema = `cw_test_mig3_${randomBytes(4).toString('hex')}`;
+  let store: Store;
+  let pool: pg.Pool;
+
+  beforeAll(async () => {
+    await runner({ databaseUrl: DATABASE_URL, dir: MIGRATIONS_DIR, migrationsTable: 'pgmigrations', schema, createSchema: true, direction: 'up', count: 2, log: () => {} });
+    pool = new pg.Pool({ connectionString: DATABASE_URL, options: `-c search_path=${schema},public` });
+    store = await openStore({ url: DATABASE_URL, schema });
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+    await store?.dropSchema();
+    await store?.close();
+  });
+
+  it('marks every indexed file as changed so the next index extracts the new facts', async () => {
+    await pool.query(`INSERT INTO files (path, hash, language) VALUES ('api/app.ts', 'h1', 'typescript')`);
+    await store.migrate();
+    expect([...(await store.getFileHashes()).values()]).toEqual(['']);
+  });
+});

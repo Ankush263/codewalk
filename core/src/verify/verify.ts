@@ -1,3 +1,4 @@
+import type { EndpointContext } from '../context/endpoint.js';
 import type { FnContext } from '../context/fn.js';
 import type { Step, Walkthrough } from '../llm/schema.js';
 
@@ -26,9 +27,18 @@ const LANGUAGE_WORDS = new Set([
   'switch', 'case', 'break', 'continue', 'import', 'export', 'default', 'from', 'as', 'type', 'interface',
 ]);
 
+/** What a walkthrough may cite: files with their line counts, identifiers, and imported packages. */
+export interface VerifyFacts {
+  files: Record<string, number>;
+  vocabulary: Set<string>;
+  packages: Set<string>;
+}
+
 export function verifyFnWalkthrough(walkthrough: Walkthrough, ctx: FnContext): VerifyResult {
-  const vocabulary = buildVocabulary(ctx);
-  const packages = new Set(ctx.packages.map((p) => p.name));
+  return verifyWalkthrough(walkthrough, { files: ctx.files, vocabulary: buildVocabulary(ctx), packages: new Set(ctx.packages.map((p) => p.name)) });
+}
+
+export function verifyWalkthrough(walkthrough: Walkthrough, facts: VerifyFacts): VerifyResult {
   const dropped: DroppedStep[] = [];
   const removedDocs: VerifyResult['removedDocs'] = [];
 
@@ -36,13 +46,13 @@ export function verifyFnWalkthrough(walkthrough: Walkthrough, ctx: FnContext): V
     .map((stage) => ({
       ...stage,
       steps: stage.steps.flatMap((step): Step[] => {
-        const reasons = checkStep(step, ctx.files, vocabulary);
+        const reasons = checkStep(step, facts.files, facts.vocabulary);
         if (reasons.length > 0) {
           dropped.push({ stepId: step.id, reasons });
           return [];
         }
         const docs = step.docs.filter((d) => {
-          if (packages.has(d.package)) return true;
+          if (facts.packages.has(d.package)) return true;
           removedDocs.push({ stepId: step.id, ...d });
           return false;
         });
@@ -52,6 +62,35 @@ export function verifyFnWalkthrough(walkthrough: Walkthrough, ctx: FnContext): V
     .filter((stage) => stage.steps.length > 0);
 
   return { walkthrough: { ...walkthrough, stages }, dropped, removedDocs };
+}
+
+/** Language words plus every identifier in `texts`. */
+export function vocabularyOf(texts: Iterable<string | null | undefined>): Set<string> {
+  const vocabulary = new Set(LANGUAGE_WORDS);
+  for (const text of texts) if (text) for (const id of identifiers(text)) vocabulary.add(id);
+  return vocabulary;
+}
+
+/** Everything an endpoint walkthrough may name or cite. */
+export function endpointVerifyFacts(ctx: EndpointContext): VerifyFacts {
+  const nodes = [...ctx.chain, ...ctx.errorHandlers];
+  const symbols = [...nodes.flatMap((n) => (n.symbol ? [n.symbol] : [])), ...ctx.callees.flatMap((c) => (c.callee ? [c.callee] : []))];
+  return {
+    files: ctx.files,
+    packages: new Set(ctx.packages.map((p) => p.name)),
+    vocabulary: vocabularyOf([
+      ...ctx.registrations.map((b) => b.lines.join('\n')),
+      ...nodes.map((n) => n.code?.lines.join('\n')),
+      ...ctx.callees.map((c) => c.code?.lines.join('\n')),
+      ...nodes.map((n) => n.label),
+      ...symbols.flatMap((s) => [s.name, s.signature]),
+      ...ctx.callees.map((c) => c.calleeText),
+      ...ctx.sideEffects.map((e) => e.detail),
+      ...ctx.errorPaths.map((p) => p.error),
+      ...ctx.packages.flatMap((p) => [p.name, ...p.importedNames]),
+      ctx.route.fullPath,
+    ]),
+  };
 }
 
 function checkStep(step: Step, files: Record<string, number>, vocabulary: Set<string>): string[] {
