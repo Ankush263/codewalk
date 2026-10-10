@@ -12,7 +12,7 @@ import type { FnWalkthrough } from './fn.js';
 /** Bumped when the saved shape changes; older saves are treated as never generated. */
 export const SAVED_VERSION = 2;
 
-export type ScopeKind = 'fn' | 'file' | 'endpoint' | 'component';
+export type ScopeKind = 'fn' | 'file' | 'endpoint' | 'component' | 'trace';
 
 /** The code a section explains: a named symbol (found again by name when lines move) or a fixed range. */
 export interface BlockRef {
@@ -98,16 +98,39 @@ export interface ComponentOverview {
   warnings: string[];
 }
 
+/** A full-stack trace's facts (CLAUDE.md §6.5), from the index alone; rebuilt on every run. */
+export interface TraceOverview {
+  method: string;
+  path: string;
+  /** "file#Component" that triggers the call. */
+  component: string;
+  /** describeTrigger of the first trigger, or a note that none was found. */
+  trigger: string;
+  /** "POST /api/patients/enroll in useEnrollMutation.mutate (web/hooks/useEnrollMutation.ts:19)". */
+  call: string;
+  /** describeLink: how the call was matched to the route. */
+  link: string;
+  /** Labels of the route's middleware chain and handler. */
+  chain: string[];
+  /** Calls made after the response, in order, each once. */
+  afterResponse: string[];
+  warnings: string[];
+  /** Mermaid sequenceDiagram source. */
+  diagram: string;
+}
+
 export interface SavedWalkthrough {
   version: typeof SAVED_VERSION;
   scopeKind: ScopeKind;
-  /** "file#symbol" or "file:start-end" for fn, "file" for file, "METHOD /path" for endpoint, "file#Component" for component. */
+  /** "file#symbol" or "file:start-end" for fn, "file" for file, "METHOD /path" for endpoint, "file#Component" for component, "METHOD /path <- file#Component" for trace. */
   scopeRef: string;
   overview: FileOverview | null;
   /** Endpoint walkthroughs only. */
   endpoint?: EndpointOverview;
   /** Component walkthroughs only. */
   component?: ComponentOverview;
+  /** Trace walkthroughs only. */
+  trace?: TraceOverview;
   sections: Section[];
 }
 
@@ -232,6 +255,18 @@ export function componentNotes(o: ComponentOverview): string[] {
     ...o.effects.map((e) => `Effect: ${e.hook} ${e.deps ? `[${e.deps.join(', ')}]` : '(every render)'} in ${e.owner} at ${e.at}`),
     ...o.apiCalls.map((a) => `API call: ${a.method} ${a.urlPattern} at ${a.at}${a.triggers.length ? ` ← ${a.triggers.join('; ')}` : ' (no trigger found in this component)'}`),
     ...o.limits.map((l) => `Not expanded: ${l}`),
+    ...o.warnings.map((w) => `Warning: ${w}`),
+  ];
+}
+
+/** The trace overview as plain lines, shared by the terminal, the stepper and Markdown. */
+export function traceNotes(o: TraceOverview): string[] {
+  return [
+    `Trace: ${o.component} → ${o.method} ${o.path}`,
+    `Trigger: ${o.trigger}`,
+    `API call: ${o.call} — ${o.link}`,
+    `Server: ${o.chain.join(' → ')}`,
+    `After the response: ${o.afterResponse.join(', ') || 'nothing in the calling function'}`,
     ...o.warnings.map((w) => `Warning: ${w}`),
   ];
 }

@@ -1,5 +1,5 @@
 import { describeTrigger, type ComponentContext, type ReactUnit } from '../context/component.js';
-import { describe, fence } from './prompt.js';
+import { citeFiles, describe, fence } from './prompt.js';
 
 // Turns a ComponentContext into the prompt. Same contract as `walk fn` (CLAUDE.md §8.2): the model
 // sees only these facts and cites only them; the verifier enforces it afterwards.
@@ -21,7 +21,7 @@ Rules:
 - Step ids are unique, e.g. "s1", "s2".
 - "unresolved": copy every note listed under "Unresolved", plus anything else you could not determine.`;
 
-export function renderComponentPrompt(ctx: ComponentContext): string {
+export function componentPromptSections(ctx: ComponentContext): string[] {
   const out: string[] = [];
   const c = ctx.component;
   const f = c.facts;
@@ -110,11 +110,11 @@ export function renderComponentPrompt(ctx: ComponentContext): string {
     for (const o of ctx.omitted) out.push(`- ${o}`);
   }
 
-  out.push('## Files you may cite (with line counts)');
-  for (const [file, lines] of Object.entries(ctx.files)) out.push(`- ${file}: ${lines} lines`);
+  return out;
+}
 
-  out.push(`Write the walkthrough of ${c.symbol.name}.`);
-  return out.join('\n\n');
+export function renderComponentPrompt(ctx: ComponentContext): string {
+  return [...componentPromptSections(ctx), ...citeFiles(ctx.files), `Write the walkthrough of ${ctx.component.symbol.name}.`].join('\n\n');
 }
 
 function pushUnitFacts(out: string[], u: ReactUnit): void {

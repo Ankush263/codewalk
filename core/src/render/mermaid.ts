@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
 import type { EndpointContext, EndpointSideEffect } from '../context/endpoint.js';
+import type { TraceContext } from '../context/trace.js';
 
 // The sequence diagram of one endpoint (CLAUDE.md §6.3 item 7), drawn from static facts only, never
 // by the LLM: the chain in order, then each function's calls and side effects in line order. Errors
@@ -75,4 +76,51 @@ function host(detail: string): string {
 /** Mermaid ends a statement at ";" and reads "#" as an entity; neither may appear in labels. */
 function text(s: string): string {
   return s.replace(/[;#\n]/g, ' ').trim();
+}
+
+/**
+ * The full-stack diagram (CLAUDE.md §6.5): the user (or an effect) → the component → the frontend files
+ * on the trigger path → the endpoint diagram, whose Client is the frontend function making the call, so
+ * responses and error statuses come back to it → what that function does after the response.
+ */
+export function traceDiagram(ctx: TraceContext): string {
+  const comp = ctx.component.component.symbol;
+  const fileOf = new Map<string, string>();
+  for (const u of [ctx.component.component, ...ctx.component.hooks]) for (const s of [u.symbol, ...u.inner]) fileOf.set(s.name, s.file);
+  for (const c of ctx.component.callees) if (c.callee) fileOf.set(c.callee.name, c.callee.file);
+
+  const participants = ['  actor User', `  participant C as ${text(comp.name)}`];
+  const ids = new Map<string, string>([[comp.file, 'C']]);
+  const idFor = (file: string): string => {
+    let id = ids.get(file);
+    if (!id) {
+      id = `F${ids.size}`;
+      ids.set(file, id);
+      participants.push(`  participant ${id} as ${text(basename(file))}`);
+    }
+    return id;
+  };
+
+  const messages: string[] = [];
+  const trigger = ctx.link.call.triggers[0];
+  if (!trigger) messages.push('  Note over C: no trigger found');
+  else if (trigger.kind === 'effect') messages.push(`  Note over C: ${text(trigger.label)}`);
+  else messages.push(`  User->>C: ${text(trigger.label)}`);
+  let from = 'C';
+  for (const name of trigger?.path ?? [ctx.link.call.symbol.name]) {
+    const to = idFor(fileOf.get(name) ?? ctx.link.call.symbol.file);
+    messages.push(`  ${from}->>${to}: ${text(name.slice(name.lastIndexOf('.') + 1))}()`);
+    from = to;
+  }
+
+  const server = endpointDiagram(ctx.endpoint).split('\n').slice(1);
+  for (const line of server) {
+    if (line === '  participant Client') continue;
+    if (line.trimStart().startsWith('participant ')) participants.push(line);
+    else messages.push(line.replace(/^(\s+)Client(?=-?->>)/, `$1${from}`).replace(/(-?->>)Client:/, `$1${from}:`));
+  }
+
+  const after = [...new Set(ctx.afterResponse.map((a) => `${a.calleeText.slice(a.calleeText.lastIndexOf('.') + 1)}()`))];
+  if (after.length > 0) messages.push(`  Note over ${from}: then ${text(after.join(', '))}`);
+  return ['sequenceDiagram', ...participants, ...messages].join('\n');
 }

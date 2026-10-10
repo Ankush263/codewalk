@@ -181,7 +181,7 @@ export async function buildComponentContext(store: Store, repoRoot: string, targ
   return { ...ctx, structureHash: structureHashOf(ctx) };
 }
 
-interface ComponentStructure {
+export interface ComponentStructure {
   component: ReactUnit;
   hooks: ExpandedHook[];
   units: ReactUnit[];
@@ -197,7 +197,7 @@ interface ComponentStructure {
  * and its handlers make, its children and its API calls with their triggers. Reads no source files, so
  * `walk list` can use it cheaply. Orders are by file, line and name, never by database id.
  */
-async function componentStructure(store: Store, target: ComponentTarget, depth: number): Promise<ComponentStructure> {
+export async function componentStructure(store: Store, target: ComponentTarget, depth: number): Promise<ComponentStructure> {
   const symbolsOf = fileSymbolsLoader(store);
   const symbol = pickComponent(target, await symbolsOf(target.file));
   const [facts] = await store.getReactFacts([symbol.id]);

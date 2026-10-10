@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CONFIG_FILE, ConfigError, createDefaultConfig, findRepoRoot, loadConfig, schemaNameFor } from './config.js';
+import { addPinnedEdge, CONFIG_FILE, ConfigError, createDefaultConfig, findRepoRoot, loadConfig, schemaNameFor } from './config.js';
 
 const FIXTURE = new URL('../../fixture', import.meta.url).pathname;
 
@@ -67,5 +67,27 @@ describe('config', () => {
     mkdirSync(join(dir, 'apps', 'web'), { recursive: true });
     expect(createDefaultConfig(dir).roots).toEqual({ backend: 'apps/api', frontend: 'apps/web' });
     expect(createDefaultConfig(FIXTURE).roots).toEqual({ backend: 'api', frontend: 'web' });
+  });
+
+  it('validates pinned edges', () => {
+    const base = loadConfig(FIXTURE);
+    writeConfig({ ...base, roots: { frontend: '.' }, pinnedEdges: [{ caller: 'no-hash', method: 'POST', url: '/x', route: 'POST /x' }] });
+    expect(() => loadConfig(dir)).toThrow(/pinnedEdges/);
+  });
+
+  it('adds a pin, replacing one for the same call and keeping every other field', () => {
+    const base = loadConfig(FIXTURE);
+    writeConfig({ ...base, roots: { frontend: '.' } });
+    const pin = { caller: 'web/a.ts#load', method: 'GET', url: '/items', route: 'GET /api/items' };
+    addPinnedEdge(dir, pin);
+    addPinnedEdge(dir, { ...pin, route: 'GET /api/v2/items' });
+    addPinnedEdge(dir, { ...pin, url: '/other', route: 'GET /api/other' });
+    const config = loadConfig(dir);
+    expect(config.pinnedEdges).toEqual([
+      { ...pin, route: 'GET /api/v2/items' },
+      { ...pin, url: '/other', route: 'GET /api/other' },
+    ]);
+    expect(config.apiClientWrappers).toEqual(base.apiClientWrappers);
+    expect(readFileSync(join(dir, CONFIG_FILE), 'utf8')).toMatch(/\n {2}"pinnedEdges": \[\n/);
   });
 });

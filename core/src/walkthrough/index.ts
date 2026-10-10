@@ -6,3 +6,4 @@ export * from './persist.js';
 export * from './saved.js';
 export * from './staleness.js';
 export { componentBlocks, componentOverviewOf, explainComponent, generateComponentSection } from './component.js';
+export { explainTrace, generateTraceSection, traceBlocks, traceOverviewOf } from './trace.js';

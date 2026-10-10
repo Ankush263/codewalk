@@ -113,3 +113,8 @@ export function fence(block: CodeBlock): string {
   const body = block.lines.map((line, i) => `${String(block.start + i).padStart(width)} | ${line}`).join('\n');
   return `\`\`\`ts title="${block.file}:${block.start}-${block.end}"\n${body}\n\`\`\``;
 }
+
+/** The closing list every prompt ends with: the only files a step may cite, with their line counts. */
+export function citeFiles(files: Record<string, number>): string[] {
+  return ['## Files you may cite (with line counts)', ...Object.entries(files).map(([file, lines]) => `- ${file}: ${lines} lines`)];
+}

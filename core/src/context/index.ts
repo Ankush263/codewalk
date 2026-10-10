@@ -4,3 +4,4 @@ export * from './order.js';
 export { parseComponentTarget, parseFileTarget, parseFnTarget, TargetError, type ComponentTarget, type FnTarget } from './target.js';
 export * from './endpoint.js';
 export * from './component.js';
+export * from './trace.js';

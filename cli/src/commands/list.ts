@@ -1,4 +1,4 @@
-import { checkWalkthrough, currentChainHash, currentStructureHash, filesOf, indexRepo, listSavedWalkthroughs, loadCurrentSource } from '@codewalk/core';
+import { checkWalkthrough, currentChainHash, currentStructureHash, currentTraceHash, filesOf, indexRepo, listSavedWalkthroughs, loadCurrentSource } from '@codewalk/core';
 import { formatList, type ListRow } from '../ui/format.js';
 import { connectStore, loadRepo, type IO } from './shared.js';
 
@@ -25,6 +25,9 @@ export async function runList(cwd: string, options: ListOptions, io: IO): Promis
       if (saved.scopeKind === 'endpoint') chains.set(saved.scopeRef, await currentChainHash(store, saved.scopeRef));
       if (saved.scopeKind === 'component') {
         chains.set(saved.scopeRef, await currentStructureHash(store, repo.repoRoot, saved.scopeRef, saved.sections[0]?.depth ?? 2));
+      }
+      if (saved.scopeKind === 'trace') {
+        chains.set(saved.scopeRef, await currentTraceHash(store, repo.repoRoot, saved.scopeRef, saved.sections[0]?.depth ?? 3));
       }
     }
     rows = entries.map(({ saved, savedAt }) => ({

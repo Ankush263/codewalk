@@ -96,6 +96,7 @@ export function printIndexResult(result: IndexResult, io: IO): void {
     );
   }
   io.log(`  ${stats.symbols} symbols · ${stats.calls} calls (${stats.unresolved} unresolved)`);
+  for (const warning of result.warnings) io.log(`! ${warning}`);
 }
 
 function describeCause(cause: unknown): string {

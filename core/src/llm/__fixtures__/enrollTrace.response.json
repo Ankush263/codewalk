@@ -1,0 +1,133 @@
+{
+  "title": "How enrolling a patient works, from the Enroll button to the database",
+  "summary": "Submitting EnrollForm calls mutate from useEnrollMutation, which posts the form to POST /api/patients/enroll; the request passes body parsing, session auth, rate limiting and validation, enrollPatient writes the patient and consent in one transaction, the server answers 201, and the form resets.",
+  "stages": [
+    {
+      "name": "UI trigger",
+      "steps": [
+        {
+          "id": "s1",
+          "code_ref": { "file": "web/components/EnrollForm.tsx", "start": 32, "end": 36 },
+          "explanation": "`handleSubmit` runs when the `form` fires `onSubmit`: it calls `preventDefault`, stops unless `values.consentGiven` is true, and calls `mutate` with `values`.",
+          "example": {
+            "input": "the user fills Asha / Rao / +91 98765-43210 / 1990-04-02, ticks consent and clicks Enroll",
+            "state_after": "mutate(values) called with values = { firstName: 'Asha', lastName: 'Rao', phone: '+91 98765-43210', dateOfBirth: '1990-04-02', consentGiven: true }"
+          },
+          "references": [{ "file": "web/hooks/useEnrollMutation.ts", "line": 15, "role": "callee" }],
+          "docs": [],
+          "concepts": ["form submission"],
+          "risks": ["Without consent nothing is sent."]
+        }
+      ]
+    },
+    {
+      "name": "Request",
+      "steps": [
+        {
+          "id": "s2",
+          "code_ref": { "file": "web/hooks/useEnrollMutation.ts", "start": 15, "end": 19 },
+          "explanation": "`mutate` sets `status` to `submitting`, clears `error` and awaits `api.post` on `/api/patients/enroll` with the form `values`.",
+          "example": { "input": "mutate(values)", "state_after": "status = 'submitting'; POST /api/patients/enroll sent with the values as the JSON body" },
+          "references": [{ "file": "web/apiClient.ts", "line": 28, "role": "callee" }],
+          "docs": [],
+          "concepts": ["API client"],
+          "risks": []
+        },
+        {
+          "id": "s3",
+          "code_ref": { "file": "api/app.ts", "start": 9, "end": 10 },
+          "explanation": "`express.json` parses the JSON body into `req.body`, then `app.use` hands every path under `/api` to `apiRouter`.",
+          "example": { "input": "the POST arrives at the server", "state_after": "req.body = { firstName: 'Asha', lastName: 'Rao', phone: '+91 98765-43210', dateOfBirth: '1990-04-02', consentGiven: true }" },
+          "references": [{ "file": "api/routes/index.ts", "line": 6, "role": "callee" }],
+          "docs": [{ "package": "express", "symbol": "express.json" }],
+          "concepts": ["middleware chain"],
+          "risks": []
+        }
+      ]
+    },
+    {
+      "name": "Server",
+      "steps": [
+        {
+          "id": "s4",
+          "code_ref": { "file": "api/middleware/auth.ts", "start": 11, "end": 23 },
+          "explanation": "`requireAuth` takes the bearer token from the `authorization` header, loads `session:${token}` with `redis.get` and stores the parsed `SessionUser` on `req.user`.",
+          "example": { "input": "Authorization: Bearer tok_1 (from localStorage)", "state_after": "req.user = { id: 'u_7', role: 'staff' } (session assumed to exist)" },
+          "references": [{ "file": "api/routes/patients.ts", "line": 11, "role": "caller" }],
+          "docs": [],
+          "concepts": ["session auth"],
+          "risks": ["Missing or expired session: UnauthorizedError, 401, and mutate shows 'Enrollment failed.'"]
+        },
+        {
+          "id": "s5",
+          "code_ref": { "file": "api/middleware/validate.ts", "start": 7, "end": 13 },
+          "explanation": "`validateBody` runs `schema.safeParse` on `req.body`; on failure it passes a `ValidationError` with the issue list to `next`, otherwise it replaces `req.body` with `result.data`.",
+          "example": { "input": "the same body", "state_after": "result.success = true; req.body is the parsed EnrollInput" },
+          "references": [{ "file": "api/routes/patients.ts", "line": 13, "role": "caller" }],
+          "docs": [],
+          "concepts": ["schema validation"],
+          "risks": ["Invalid body: ValidationError, 400"]
+        },
+        {
+          "id": "s6",
+          "code_ref": { "file": "api/controllers/patientsController.ts", "start": 9, "end": 10 },
+          "explanation": "`enrollHandler` reads `user` from the request and calls `enrollPatient` with `req.body` and `user.id`.",
+          "example": { "input": "the validated request", "state_after": "enrollPatient(body, 'u_7') awaited" },
+          "references": [{ "file": "api/services/enrollService.ts", "line": 35, "role": "callee" }],
+          "docs": [],
+          "concepts": ["controller / service split"],
+          "risks": []
+        }
+      ]
+    },
+    {
+      "name": "Persistence",
+      "steps": [
+        {
+          "id": "s7",
+          "code_ref": { "file": "api/services/enrollService.ts", "start": 47, "end": 58 },
+          "explanation": "It opens a transaction with `client.query`, writes the patient with `insertPatient` and the consent with `insertConsent`, then sends `COMMIT`.",
+          "example": { "input": "phone normalised to 9876543210, no existing patient", "state_after": "rows inserted in patients and consents; patient.id = 'p_101' (assumed)" },
+          "references": [
+            { "file": "api/repositories/patientRepository.ts", "line": 35, "role": "callee" },
+            { "file": "api/repositories/patientRepository.ts", "line": 45, "role": "callee" }
+          ],
+          "docs": [],
+          "concepts": ["database transaction"],
+          "risks": ["Phone already enrolled: ConflictError, 409, and mutate shows 'This patient is already enrolled.'"]
+        }
+      ]
+    },
+    {
+      "name": "Response",
+      "steps": [
+        {
+          "id": "s8",
+          "code_ref": { "file": "api/controllers/patientsController.ts", "start": 11, "end": 11 },
+          "explanation": "`res.status` sets 201 and `res.json` sends the created patient back.",
+          "example": { "input": "the inserted patient", "state_after": "HTTP 201 with { id: 'p_101', firstName: 'Asha', ... }" },
+          "references": [],
+          "docs": [],
+          "concepts": ["HTTP status codes"],
+          "risks": []
+        }
+      ]
+    },
+    {
+      "name": "UI update",
+      "steps": [
+        {
+          "id": "s9",
+          "code_ref": { "file": "web/hooks/useEnrollMutation.ts", "start": 20, "end": 21 },
+          "explanation": "When the response arrives, `mutate` sets `status` to `success` and calls `onSuccess` with the returned `patient`; the callback `EnrollForm` passed resets `values` with `setValues` to `EMPTY_FORM` and calls `onEnrolled`.",
+          "example": { "input": "the 201 response", "state_after": "status = 'success'; values = EMPTY_FORM; onEnrolled(patient) called" },
+          "references": [{ "file": "web/components/EnrollForm.tsx", "line": 21, "role": "caller" }],
+          "docs": [],
+          "concepts": ["callback props"],
+          "risks": []
+        }
+      ]
+    }
+  ],
+  "unresolved": []
+}

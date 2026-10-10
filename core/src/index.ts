@@ -8,4 +8,4 @@ export * from './store/index.js';
 export * from './verify/index.js';
 export * from './walkthrough/index.js';
 export { renderMarkdown } from './render/markdown.js';
-export { endpointDiagram } from './render/mermaid.js';
+export { endpointDiagram, traceDiagram } from './render/mermaid.js';

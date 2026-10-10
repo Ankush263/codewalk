@@ -183,7 +183,7 @@ export async function currentChainHash(store: Store, scopeRef: string): Promise<
   return route ? chainHashOf(route, await store.getMiddlewareChain(route.id)) : null;
 }
 
-async function findRoute(store: Store, target: EndpointTarget): Promise<{ route: RouteRecord; warnings: string[] }> {
+export async function findRoute(store: Store, target: EndpointTarget): Promise<{ route: RouteRecord; warnings: string[] }> {
   const routes = await store.listRoutes();
   // Registrations stitching couldn't place usually explain a missing route, so they go in the error.
   const withIndexWarnings = async (message: string) => {

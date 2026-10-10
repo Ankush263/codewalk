@@ -4,9 +4,12 @@ import { runner } from 'node-pg-migrate';
 import { handlerKey, handlerLabel, handlerNote, stitchRoutes } from '../routes/stitch.js';
 import type {
   ApiCallRecord,
+  ApiCallWithCaller,
   CallEdge,
   CalleeRecord,
   CallerRecord,
+  CrossEdgeFact,
+  CrossEdgeRecord,
   FileRecord,
   ImporterRecord,
   ImportRecord,
@@ -570,6 +573,71 @@ export class Store {
     );
     return rows.map((r) => ({ id: Number(r.id), symbolId: Number(r.symbol_id), method: r.method, urlPattern: r.url_pattern, urlText: r.url_text, line: r.line }));
   }
+  /** Every API call with the function that makes it, by file and line. */
+  async listApiCalls(): Promise<ApiCallWithCaller[]> {
+    const { rows } = await this.pool.query<ApiCallRow>(
+      `SELECT a.id, a.symbol_id, a.method, a.url_pattern, a.url_text, a.line, ${PREFIXED_SYMBOL}
+       FROM api_calls a JOIN symbols s ON s.id = a.symbol_id JOIN files sf ON sf.id = s.file_id
+       ORDER BY sf.path, a.line, a.id`,
+    );
+    return rows.map(toApiCallWithCaller);
+  }
+
+  /** Replaces every API call -> route edge in one transaction (they are rebuilt on each index pass). */
+  async replaceCrossEdges(edges: CrossEdgeFact[]): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM cross_edges');
+      await client.query(
+        `INSERT INTO cross_edges (api_call_id, route_id, confidence, pinned, match, resolved)
+         SELECT x."apiCallId", x."routeId", x.confidence, x.pinned, x.match, x.resolved
+         FROM jsonb_to_recordset($1::jsonb) AS x("apiCallId" bigint, "routeId" bigint, confidence double precision,
+                                                 pinned boolean, match text, resolved boolean)`,
+        [JSON.stringify(edges)],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** Edges into a route, best first, each with its API call and calling function. */
+  async getCrossEdges(routeId: number): Promise<CrossEdgeRecord[]> {
+    const { rows } = await this.pool.query<ApiCallRow & { route_id: string; match: CrossEdgeRecord['match']; confidence: number; pinned: boolean; resolved: boolean; call_resolved: boolean }>(
+      `SELECT e.route_id, e.match, e.confidence, e.pinned, e.resolved,
+              EXISTS (SELECT 1 FROM cross_edges r WHERE r.api_call_id = e.api_call_id AND r.resolved) AS call_resolved,
+              a.id, a.symbol_id, a.method, a.url_pattern, a.url_text, a.line, ${PREFIXED_SYMBOL}
+       FROM cross_edges e
+       JOIN api_calls a ON a.id = e.api_call_id
+       JOIN symbols s ON s.id = a.symbol_id JOIN files sf ON sf.id = s.file_id
+       WHERE e.route_id = $1
+       ORDER BY e.confidence DESC, sf.path, a.line`,
+      [routeId],
+    );
+    return rows.map((r) => ({
+      apiCall: toApiCallWithCaller(r), routeId: Number(r.route_id), match: r.match, confidence: r.confidence, pinned: r.pinned,
+      resolved: r.resolved, callResolved: r.call_resolved,
+    }));
+  }
+
+  /** Components whose JSX handlers name `key`, e.g. `onClick={logout}`. */
+  async getHandlerOwners(key: SymbolKey): Promise<SymbolRecord[]> {
+    const { rows } = await this.pool.query<SymbolRow>(
+      `SELECT DISTINCT s.id, f.path AS file, s.name, s.kind, s.start_line, s.end_line, s.exported, s.signature
+       FROM components c
+       JOIN symbols s ON s.id = c.symbol_id JOIN files f ON f.id = s.file_id
+       CROSS JOIN LATERAL jsonb_array_elements(c.handlers) AS h
+       WHERE h->'target'->>'file' = $1 AND h->'target'->>'name' = $2 AND (h->'target'->>'startLine')::int = $3
+       ORDER BY f.path, s.start_line`,
+      [key.file, key.name, key.startLine],
+    );
+    return rows.map(toSymbolRecord);
+  }
+
 
   /** The symbols the keys name, in one query; keys that match nothing are left out. */
   async getSymbolsByKeys(keys: SymbolKey[]): Promise<SymbolRecord[]> {
@@ -587,6 +655,13 @@ export class Store {
   async getIndexSetting(key: string): Promise<string | null> {
     const { rows } = await this.pool.query<{ value: string }>('SELECT value FROM index_settings WHERE key = $1', [key]);
     return rows[0]?.value ?? null;
+  }
+
+  async setIndexSetting(key: string, value: string): Promise<void> {
+    await this.pool.query(
+      'INSERT INTO index_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+      [key, value],
+    );
   }
 
   /** Records a new extraction setting and marks every file as changed, so the next index pass re-extracts all of them. */
@@ -704,6 +779,22 @@ interface RouterCallRow {
   end_line: number;
   order_idx: number;
   handlers: RouterCallRecord['handlers'];
+}
+
+interface ApiCallRow extends PrefixedSymbolRow {
+  id: string;
+  symbol_id: string;
+  method: string;
+  url_pattern: string;
+  url_text: string;
+  line: number;
+}
+
+function toApiCallWithCaller(r: ApiCallRow): ApiCallWithCaller {
+  return {
+    id: Number(r.id), symbolId: Number(r.symbol_id), method: r.method, urlPattern: r.url_pattern, urlText: r.url_text, line: r.line,
+    caller: optionalSymbol(r)!,
+  };
 }
 
 function optionalSymbol(r: PrefixedSymbolRow): SymbolRecord | null {

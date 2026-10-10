@@ -102,3 +102,30 @@ describe('react-facts-and-api-calls migration', () => {
     ]);
   });
 });
+
+describe('cross-edge-resolution migration', () => {
+  const schema = `cw_test_mig5_${randomBytes(4).toString('hex')}`;
+  let store: Store;
+  let pool: pg.Pool;
+
+  beforeAll(async () => {
+    store = await openStore({ url: DATABASE_URL, schema });
+    await store.migrate();
+    pool = new pg.Pool({ connectionString: DATABASE_URL, options: `-c search_path=${schema},public` });
+  });
+
+  afterAll(async () => {
+    await pool?.end();
+    await store?.dropSchema();
+    await store?.close();
+  });
+
+  it('stores confidence as double precision and adds match and resolved', async () => {
+    const { rows } = await pool.query(
+      `SELECT column_name, data_type FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'cross_edges' AND column_name IN ('confidence', 'match', 'resolved') ORDER BY 1`,
+      [schema],
+    );
+    expect(rows.map((r) => `${r.column_name} ${r.data_type}`)).toEqual(['confidence double precision', 'match text', 'resolved boolean']);
+  });
+});

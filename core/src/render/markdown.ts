@@ -1,5 +1,5 @@
 import type { FnWalkthrough, WalkthroughStep } from '../walkthrough/fn.js';
-import { componentNotes, endpointNotes, flattenWalkthrough, overviewNotes, type SavedWalkthrough } from '../walkthrough/saved.js';
+import { componentNotes, endpointNotes, traceNotes, flattenWalkthrough, overviewNotes, type SavedWalkthrough } from '../walkthrough/saved.js';
 
 // Markdown export (CLAUDE.md §9): saved next to the JSON in .walkthrough/walkthroughs/ and printed
 // by `--out md`. Code snippets come from the current source, which matches the saved line numbers.
@@ -19,6 +19,12 @@ export function renderMarkdown(saved: SavedWalkthrough, codeLines: (file: string
   } else if (saved.scopeKind === 'component') {
     const w = saved.sections[0].walkthrough;
     out.push(`# ${w.title}`, '', `\`${saved.scopeRef}\``, '', w.summary, '', '## Component', '', ...componentNotes(saved.component!).map((n) => `- ${n}`));
+    renderStages(out, w, 2, codeLines);
+  } else if (saved.scopeKind === 'trace') {
+    const w = saved.sections[0].walkthrough;
+    const t = saved.trace!;
+    out.push(`# ${w.title}`, '', `\`${saved.scopeRef}\``, '', w.summary, '', '## Trace', '', ...traceNotes(t).map((n) => `- ${n}`));
+    out.push('', '## Sequence', '', '```mermaid', t.diagram, '```');
     renderStages(out, w, 2, codeLines);
   } else {
     const o = saved.overview!;

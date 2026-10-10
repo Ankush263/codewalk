@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { render } from 'ink';
-import { codeReader, componentNotes, endpointNotes, flattenWalkthrough, overviewNotes, renderMarkdown, type SavedWalkthrough } from '@codewalk/core';
+import { codeReader, componentNotes, endpointNotes, traceNotes, flattenWalkthrough, overviewNotes, renderMarkdown, type SavedWalkthrough } from '@codewalk/core';
 import type { IO } from '../commands/shared.js';
 import { Stepper } from './Stepper.js';
 import { formatWalkthrough } from './format.js';
@@ -19,9 +19,11 @@ export async function printWalkthrough(saved: SavedWalkthrough, out: OutFormat, 
       ? endpointNotes(saved.endpoint)
       : saved.component
         ? componentNotes(saved.component)
-        : [];
+        : saved.trace
+          ? traceNotes(saved.trace)
+          : [];
   if (out === 'json') {
-    io.log(JSON.stringify({ ...walkthrough, overview: saved.overview, endpoint: saved.endpoint ?? null, component: saved.component ?? null }, null, 2));
+    io.log(JSON.stringify({ ...walkthrough, overview: saved.overview, endpoint: saved.endpoint ?? null, component: saved.component ?? null, trace: saved.trace ?? null }, null, 2));
   } else if (out === 'md') {
     io.log(renderMarkdown(saved, codeLines));
   } else if (interactive) {

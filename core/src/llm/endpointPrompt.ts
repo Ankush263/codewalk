@@ -1,5 +1,5 @@
 import type { EndpointContext, EndpointNode } from '../context/endpoint.js';
-import { describe, fence } from './prompt.js';
+import { citeFiles, describe, fence } from './prompt.js';
 
 // Turns an EndpointContext into the prompt. Same contract as `walk fn` (CLAUDE.md §8.2): the model
 // sees only these facts and cites only them; the verifier enforces it afterwards.
@@ -21,7 +21,7 @@ Rules:
 - Step ids are unique, e.g. "s1", "s2".
 - "unresolved": copy every note listed under "Unresolved", plus anything else you could not determine.`;
 
-export function renderEndpointPrompt(ctx: EndpointContext): string {
+export function endpointPromptSections(ctx: EndpointContext): string[] {
   const out: string[] = [];
   const { route } = ctx;
   out.push(`# Endpoint: ${route.method} ${route.fullPath}`);
@@ -77,11 +77,12 @@ export function renderEndpointPrompt(ctx: EndpointContext): string {
     for (const o of ctx.omitted) out.push(`- ${o}`);
   }
 
-  out.push('## Files you may cite (with line counts)');
-  for (const [file, lines] of Object.entries(ctx.files)) out.push(`- ${file}: ${lines} lines`);
+  return out;
+}
 
-  out.push(`Write the walkthrough of ${route.method} ${route.fullPath}.`);
-  return out.join('\n\n');
+export function renderEndpointPrompt(ctx: EndpointContext): string {
+  const { route } = ctx;
+  return [...endpointPromptSections(ctx), ...citeFiles(ctx.files), `Write the walkthrough of ${route.method} ${route.fullPath}.`].join('\n\n');
 }
 
 function pushNode(out: string[], n: EndpointNode, bullet: string): void {

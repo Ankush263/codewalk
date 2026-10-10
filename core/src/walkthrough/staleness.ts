@@ -45,9 +45,9 @@ export interface WalkthroughStatus {
   uncovered: string[];
   /** File walkthroughs only: the file itself no longer exists. */
   fileRemoved: boolean;
-  /** Endpoint: the middleware chain resolves differently now. Component: its hooks, children, handlers or API calls changed. */
+  /** Endpoint: the middleware chain resolves differently now. Component: its hooks, children, handlers or API calls changed. Trace: the component, chain or link changed. */
   chainChanged: boolean;
-  /** Endpoint: the route is gone. Component: the component is gone. */
+  /** Endpoint: the route is gone. Component: the component is gone. Trace: the route, component or link is gone. */
   routeRemoved: boolean;
   staleSteps: number;
   totalSteps: number;
@@ -138,7 +138,7 @@ export function checkWalkthrough(saved: SavedWalkthrough, source: CurrentSource,
     uncovered = file ? walkableSymbols(file.symbols).map((s) => s.name).filter((name) => !covered.has(name)) : [];
     fileRemoved = file === null;
   }
-  const structural = saved.scopeKind === 'endpoint' || saved.scopeKind === 'component';
+  const structural = saved.scopeKind === 'endpoint' || saved.scopeKind === 'component' || saved.scopeKind === 'trace';
   const chain = structural && chains ? chains(saved.scopeRef) : undefined;
   const routeRemoved = chain === null;
   const chainChanged = typeof chain === 'string' && chain !== saved.sections[0]?.chainHash;

@@ -1,5 +1,6 @@
 import type { ComponentContext } from '../context/component.js';
 import type { EndpointContext } from '../context/endpoint.js';
+import type { TraceContext } from '../context/trace.js';
 import type { FnContext } from '../context/fn.js';
 import type { Step, Walkthrough } from '../llm/schema.js';
 
@@ -119,6 +120,13 @@ export function componentVerifyFacts(ctx: ComponentContext): VerifyFacts {
       ...ctx.packages.flatMap((p) => [p.name, ...p.importedNames]),
     ]),
   };
+}
+
+/** A trace may cite and name anything its component or endpoint context may. */
+export function traceVerifyFacts(ctx: TraceContext): VerifyFacts {
+  const front = componentVerifyFacts(ctx.component);
+  const back = endpointVerifyFacts(ctx.endpoint);
+  return { files: ctx.files, packages: new Set([...front.packages, ...back.packages]), vocabulary: new Set([...front.vocabulary, ...back.vocabulary]) };
 }
 
 function checkStep(step: Step, files: Record<string, number>, vocabulary: Set<string>): string[] {

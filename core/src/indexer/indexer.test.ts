@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { loadConfig, type WalkConfig } from '../config.js';
 import { openStore, type Store } from '../store/index.js';
-import { indexRepo } from './index.js';
+import { frontendCalls, indexRepo } from './index.js';
 
 const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://codewalk:codewalk@localhost:5432/codewalk';
 const FIXTURE = new URL('../../../fixture', import.meta.url).pathname;
@@ -254,5 +254,80 @@ describe('indexRepo: React facts, API calls and extraction settings', () => {
     expect(await store.getApiCalls([await id('web/hooks/useEnrollMutation.ts', 'useEnrollMutation.mutate')])).toEqual([]);
     expect((await indexRepo(FIXTURE, noWrappers, store)).changed).toEqual([]);
     expect((await indexRepo(FIXTURE, config, store)).changed).toHaveLength(result.scanned);
+  });
+});
+
+describe('indexRepo: frontend calls linked to routes', () => {
+  let store: Store;
+  const config = loadConfig(FIXTURE);
+  const routeId = async (method: string, path: string) => (await store.listRoutes()).find((r) => r.method === method && r.fullPath === path)!.id;
+
+  beforeAll(async () => {
+    store = await openStore({ url: DATABASE_URL, schema: `cw_test_idx5_${Math.random().toString(16).slice(2, 10)}` });
+    await store.migrate();
+    await indexRepo(FIXTURE, config, store);
+  });
+
+  afterAll(async () => {
+    await store?.dropSchema();
+    await store?.close();
+  });
+
+  it('lists every API call with its calling function', async () => {
+    expect((await store.listApiCalls()).map((a) => `${a.method} ${a.urlPattern} ${a.caller.file}#${a.caller.name}:${a.line}`)).toEqual([
+      'POST /v1/messages api/events/handlers.ts#sendWelcomeSms:7',
+      'POST /hooks/new-patient api/events/handlers.ts#notifyCareTeam:16',
+      'POST /api/patients/enroll web/hooks/useEnrollMutation.ts#useEnrollMutation.mutate:19',
+      'GET /api/patients/:id web/hooks/usePatient.ts#usePatient:13',
+    ]);
+  });
+
+  it('links only frontend calls to routes; outbound HTTP calls from the backend are never candidates', () => {
+    expect(frontendCalls([{ caller: { file: 'api/events/handlers.ts' } }, { caller: { file: 'web/hooks/usePatient.ts' } }, { caller: { file: 'webapp/x.ts' } }], config)).toEqual([
+      { caller: { file: 'web/hooks/usePatient.ts' } },
+    ]);
+    for (const frontend of ['./web', 'web/', 'web\\', './web//']) {
+      expect(frontendCalls([{ caller: { file: 'web/a.ts' } }, { caller: { file: 'api/b.ts' } }], { roots: { frontend } }), frontend).toEqual([{ caller: { file: 'web/a.ts' } }]);
+    }
+    expect(frontendCalls([{ caller: { file: 'api/x.ts' } }], { roots: { frontend: './' } })).toEqual([{ caller: { file: 'api/x.ts' } }]);
+    const single = { ...config, roots: { backend: 'api' } };
+    expect(frontendCalls([{ caller: { file: 'api/x.ts' } }], single)).toEqual([{ caller: { file: 'api/x.ts' } }]);
+  });
+
+  it('resolves each fixture call to its route with an exact match', async () => {
+    const [enroll] = await store.getCrossEdges(await routeId('POST', '/api/patients/enroll'));
+    expect(enroll).toMatchObject({ match: 'exact', confidence: 1, pinned: false, resolved: true, callResolved: true, apiCall: { method: 'POST', caller: { name: 'useEnrollMutation.mutate' } } });
+    expect((await store.getCrossEdges(await routeId('GET', '/api/patients/:id'))).map((e) => `${e.apiCall.caller.name} ${e.match} ${e.resolved}`)).toEqual(['usePatient exact true']);
+  });
+
+  it('finds the components whose handlers name a function', async () => {
+    const owners = await store.getHandlerOwners({ file: 'web/components/EnrollForm.tsx', name: 'EnrollForm.handleSubmit', startLine: 32 });
+    expect(owners.map((s) => s.name)).toEqual(['EnrollForm']);
+  });
+
+  it('applies pins from config on the next pass, warning about stale ones', async () => {
+    const pinned = {
+      ...config,
+      pinnedEdges: [
+        { caller: 'web/hooks/usePatient.ts#usePatient', method: 'GET', url: '/api/patients/:id', route: 'GET /api/patients/:id' },
+        { caller: 'web/gone.ts#gone', method: 'GET', url: '/x', route: 'GET /x' },
+      ],
+    };
+    const result = await indexRepo(FIXTURE, pinned, store);
+    expect(result.changed).toEqual([]);
+    expect(result.warnings).toEqual(['Pinned edge web/gone.ts#gone GET /x → GET /x: no such API call in the index; remove it from pinnedEdges.']);
+    const [edge] = await store.getCrossEdges(await routeId('GET', '/api/patients/:id'));
+    expect(edge).toMatchObject({ match: 'pinned', pinned: true, resolved: true });
+    expect((await indexRepo(FIXTURE, config, store)).warnings).toEqual([]);
+  });
+
+  it('rebuilds the links only when files or pins change, but always reports stale pins', async () => {
+    expect((await indexRepo(FIXTURE, config, store)).crossEdgesRebuilt).toBe(false);
+    const stale = { ...config, pinnedEdges: [{ caller: 'web/gone.ts#gone', method: 'GET', url: '/x', route: 'GET /x' }] };
+    expect((await indexRepo(FIXTURE, stale, store)).crossEdgesRebuilt).toBe(true);
+    const again = await indexRepo(FIXTURE, stale, store);
+    expect(again.crossEdgesRebuilt).toBe(false);
+    expect(again.warnings).toHaveLength(1);
+    expect((await indexRepo(FIXTURE, config, store)).crossEdgesRebuilt).toBe(true);
   });
 });

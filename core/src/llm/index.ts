@@ -5,3 +5,4 @@ export { createLineStubProvider, type LineStubProvider } from './stub.js';
 export * from './schema.js';
 export { ENDPOINT_SYSTEM_PROMPT, renderEndpointPrompt } from './endpointPrompt.js';
 export { COMPONENT_SYSTEM_PROMPT, renderComponentPrompt } from './componentPrompt.js';
+export { renderTracePrompt, TRACE_SYSTEM_PROMPT } from './tracePrompt.js';

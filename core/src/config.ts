@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 
@@ -9,6 +9,17 @@ export const CONFIG_FILE = join(WALKTHROUGH_DIR, 'config.json');
 export const DEFAULT_DATABASE_URL = 'postgres://codewalk:codewalk@localhost:5432/codewalk';
 
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const;
+
+/** A user-confirmed link from a frontend API call to a route (CLAUDE.md §6.5), keyed so it survives line moves. */
+export const pinnedEdgeSchema = z.object({
+  /** The function making the call: "<file>#<symbol>". */
+  caller: z.string().regex(/^[^#]+#.+$/, 'use "<file>#<function>", e.g. web/hooks/useEnrollMutation.ts#useEnrollMutation.mutate'),
+  method: z.string().min(1),
+  /** The call's URL pattern, e.g. "/patients/enroll". */
+  url: z.string().min(1),
+  /** The route: "<METHOD> <full path>". */
+  route: z.string().regex(/^[A-Z]+ \/\S*$/, 'use "<METHOD> <path>", e.g. "POST /api/patients/enroll"'),
+});
 
 export const configSchema = z.object({
   roots: z
@@ -31,8 +42,7 @@ export const configSchema = z.object({
   }),
   ignore: z.array(z.string()).default(['**/node_modules/**', '**/dist/**', '**/*.test.ts']),
   collapseHelpers: z.array(z.string()).default([]),
-  // Entry shape is defined in Phase 5 (walk trace); accepted as-is until then.
-  pinnedEdges: z.array(z.unknown()).default([]),
+  pinnedEdges: z.array(pinnedEdgeSchema).default([]),
   llm: z.object({
     provider: z.literal('anthropic'),
     model: z.string().min(1),
@@ -42,6 +52,20 @@ export const configSchema = z.object({
 
 export type WalkConfig = z.infer<typeof configSchema>;
 export type ApiClientWrapper = WalkConfig['apiClientWrappers'][number];
+
+export type PinnedEdge = z.infer<typeof pinnedEdgeSchema>;
+
+/**
+ * Records a pin in .walkthrough/config.json, replacing any pin for the same call. The rest of the file
+ * is kept as written (only re-indented), so a user's other settings are never lost.
+ */
+export function addPinnedEdge(repoRoot: string, pin: PinnedEdge): void {
+  const path = join(repoRoot, CONFIG_FILE);
+  const raw = JSON.parse(readFileSync(path, 'utf8')) as { pinnedEdges?: PinnedEdge[] };
+  const sameCall = (p: PinnedEdge) => p.caller === pin.caller && p.method === pin.method && p.url === pin.url;
+  raw.pinnedEdges = [...(raw.pinnedEdges ?? []).filter((p) => !sameCall(p)), pin];
+  writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+}
 
 export class ConfigError extends Error {
   constructor(message: string) {

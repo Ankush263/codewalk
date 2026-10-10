@@ -3,6 +3,7 @@ import { Command, InvalidArgumentError, Option } from 'commander';
 import { runFile, type FileOptions } from './commands/file.js';
 import { runComponent, type ComponentOptions } from './commands/component.js';
 import { runEndpoint, type EndpointOptions } from './commands/endpoint.js';
+import { runTrace, type TraceOptions } from './commands/trace.js';
 import { runFn, type FnOptions } from './commands/fn.js';
 import { runList } from './commands/list.js';
 import { runIndex } from './commands/index.js';
@@ -77,6 +78,20 @@ program
   .addOption(new Option('--out <format>', 'output format').choices(['terminal', 'json', 'md']).default('terminal'))
   .action(async (target: string, opts: ComponentOptions) => {
     process.exitCode = await runComponent(process.cwd(), target, opts, io);
+  });
+
+program
+  .command('trace')
+  .description('full-stack trace: the UI action that calls an endpoint, the request through the server to the database, and back')
+  .argument('<route>', 'e.g. "POST /api/patients/enroll"')
+  .option('--from <component>', 'which calling component to trace, e.g. web/components/EnrollForm.tsx#EnrollForm')
+  .option('--pin <n>', 'pin loose candidate <n> to this route (saved in .walkthrough/config.json)', parseDepth)
+  .option('--no-llm', 'print only the static facts')
+  .option('--depth <n>', 'how many levels of calls to include on each side', parseDepth, 3)
+  .option('--refresh', 'ignore the saved walkthrough and regenerate', false)
+  .addOption(new Option('--out <format>', 'output format').choices(['terminal', 'json', 'md']).default('terminal'))
+  .action(async (route: string, opts: TraceOptions) => {
+    process.exitCode = await runTrace(process.cwd(), route, opts, io);
   });
 
 program

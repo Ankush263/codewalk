@@ -339,3 +339,32 @@ export interface ApiCallRecord {
   urlText: string;
   line: number;
 }
+
+/** How a frontend API call was linked to a route (CLAUDE.md §6.5). */
+export type EdgeMatch = 'exact' | 'param' | 'suffix' | 'wildcard' | 'method' | 'pinned';
+
+/** One candidate link from an API call to a route; `resolved` marks the one a trace follows. */
+export interface CrossEdgeFact {
+  apiCallId: number;
+  routeId: number;
+  match: EdgeMatch;
+  confidence: number;
+  pinned: boolean;
+  resolved: boolean;
+}
+
+export interface ApiCallWithCaller extends ApiCallRecord {
+  caller: SymbolRecord;
+}
+
+/** A stored edge as a trace reads it: the API call with its calling function, and how it matched. */
+export interface CrossEdgeRecord {
+  apiCall: ApiCallWithCaller;
+  routeId: number;
+  match: EdgeMatch;
+  confidence: number;
+  pinned: boolean;
+  resolved: boolean;
+  /** True when some edge of this API call is resolved (to this route or another). */
+  callResolved: boolean;
+}

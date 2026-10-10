@@ -1,4 +1,4 @@
-import { describeTrigger, endpointDiagram, type ComponentContext, type EndpointContext, type EndpointNode, type FileContext, type ScopeKind, type WalkthroughStatus, type CodeBlock, type FnContext, type FnWalkthrough, type WalkthroughStep } from '@codewalk/core';
+import { describeLink, describeTrigger, endpointDiagram, traceDiagram, type ComponentContext, type TraceContext, type EndpointContext, type EndpointNode, type FileContext, type ScopeKind, type WalkthroughStatus, type CodeBlock, type FnContext, type FnWalkthrough, type WalkthroughStep } from '@codewalk/core';
 
 // Plain-text renderings: the `--no-llm` facts and the non-interactive walkthrough (piped output).
 
@@ -99,6 +99,23 @@ export function formatComponentFacts(ctx: ComponentContext): string {
   return out.join('\n');
 }
 
+export function formatTraceFacts(ctx: TraceContext): string {
+  const { link } = ctx;
+  const route = ctx.endpoint.route;
+  const out = [`trace ${route.method} ${route.fullPath} ← ${ctx.component.scopeRef}`];
+  section(out, 'Trigger', link.call.triggers.length ? link.call.triggers.map(describeTrigger) : ['no user action or effect found']);
+  section(out, 'API call', [`${link.call.method} ${link.call.urlPattern}  ${link.call.symbol.name} ${link.call.symbol.file}:${link.call.line}  (${describeLink(link)})`]);
+  section(out, 'Middleware chain', ctx.endpoint.chain.map((n, i) => `${i + 1}. ${n.label} [${n.phase}]`));
+  section(out, 'Side effects', ctx.endpoint.sideEffects.map((e) => `${e.kind} ${e.detail}  (${e.symbol.name} ${e.symbol.file}:${e.line})`));
+  section(out, 'Error paths', ctx.endpoint.errorPaths.map((p) => `${p.error}${p.status !== null ? ` → ${p.status}` : ''}  (${p.symbol.name} ${p.symbol.file}:${p.line})`));
+  section(out, 'After the response', ctx.afterResponse.map((a) => `${a.calleeText}  ${a.file}:${a.line}`));
+  section(out, 'Unresolved', ctx.unresolved.map((u) => u.note));
+  section(out, 'Not expanded', ctx.component.limits);
+  section(out, 'Warnings', ctx.warnings);
+  section(out, 'Sequence diagram (Mermaid)', traceDiagram(ctx).split('\n'));
+  return out.join('\n');
+}
+
 function nodeAt(n: EndpointNode): string {
   return n.symbol ? `${n.symbol.file}:${n.symbol.startLine}` : `${n.registeredAt.file}:${n.registeredAt.line}`;
 }
@@ -183,7 +200,7 @@ export interface ListRow {
 }
 
 export function formatList(rows: ListRow[]): string {
-  if (rows.length === 0) return 'No saved walkthroughs yet. Run `walk fn`, `walk file`, `walk endpoint` or `walk component` to create one.';
+  if (rows.length === 0) return 'No saved walkthroughs yet. Run `walk fn`, `walk file`, `walk endpoint`, `walk component` or `walk trace` to create one.';
   const width = Math.max(...rows.map((r) => r.scopeRef.length));
   const kindWidth = Math.max(...rows.map((r) => r.scopeKind.length));
   return rows
@@ -202,8 +219,8 @@ function staleDetail(kind: ScopeKind, s: WalkthroughStatus): string {
   const removed = s.sections.filter((x) => x.state === 'missing').map(label);
   const parts = [`${s.staleSteps}/${s.totalSteps} steps stale`];
   if (s.fileRemoved) parts.push('file removed');
-  if (s.routeRemoved) parts.push(kind === 'component' ? 'component removed' : 'route removed');
-  if (s.chainChanged) parts.push(kind === 'component' ? 'structure changed' : 'middleware chain changed');
+  if (s.routeRemoved) parts.push(kind === 'component' ? 'component removed' : kind === 'trace' ? 'trace removed' : 'route removed');
+  if (s.chainChanged) parts.push(kind === 'component' ? 'structure changed' : kind === 'trace' ? 'trace changed' : 'middleware chain changed');
   if (changed.length) parts.push(`changed: ${changed.join(', ')}`);
   if (removed.length) parts.push(`removed: ${removed.join(', ')}`);
   if (s.uncovered.length) parts.push(`not covered: ${s.uncovered.join(', ')}`);
